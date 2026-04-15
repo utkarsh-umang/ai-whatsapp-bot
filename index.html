@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>poke</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0C0C0A;
+      --surface: #141412;
+      --surface-2: #1C1C19;
+      --border: rgba(255,255,255,0.07);
+      --accent: #5EF08B;
+      --accent-bg: rgba(94,240,139,0.1);
+      --text: #F0F0EC;
+      --text-2: #888880;
+      --text-3: #383836;
+      --green: #22c55e;
+      --red: #f87171;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Outfit', sans-serif; -webkit-font-smoothing: antialiased; }
+
+    /* subtle grid bg */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    .page {
+      position: relative; z-index: 1;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; padding: 40px 20px 60px;
+    }
+
+    header {
+      width: 100%; max-width: 440px;
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 52px;
+    }
+    .logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -1px; }
+    .logo span { color: var(--accent); }
+    .pill {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: var(--text-3); border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 100px; letter-spacing: 0.5px;
+    }
+
+    /* steps */
+    .steps {
+      display: flex; align-items: flex-start; gap: 0;
+      width: 100%; max-width: 440px; margin-bottom: 40px;
+    }
+    .step-node { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; }
+    .step-node:not(:last-child)::after {
+      content: '';
+      position: absolute; top: 14px; left: calc(50% + 18px); right: calc(-50% + 18px);
+      height: 1px; background: var(--border); transition: background 0.4s;
+    }
+    .step-node.done:not(:last-child)::after { background: rgba(34,197,94,0.3); }
+
+    .node-circle {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 1px solid var(--border); background: var(--surface);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--text-3); transition: all 0.3s;
+    }
+    .step-node.active .node-circle { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 14px rgba(94,240,139,0.12); }
+    .step-node.done .node-circle { border-color: var(--green); background: rgba(34,197,94,0.08); color: var(--green); }
+
+    .node-label { font-size: 11px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; transition: color 0.3s; white-space: nowrap; }
+    .step-node.active .node-label { color: var(--text-2); }
+    .step-node.done .node-label { color: rgba(34,197,94,0.5); }
+
+    /* card */
+    .card {
+      width: 100%; max-width: 440px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 18px; padding: 36px;
+      position: relative; overflow: hidden;
+    }
+    .card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(94,240,139,0.15), transparent);
+    }
+
+    /* panels */
+    .panel { display: none; }
+    .panel.on { display: block; animation: up 0.3s ease; }
+    @keyframes up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 14px; }
+    .title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 24px; line-height: 1.2; letter-spacing: -0.3px; margin-bottom: 10px; }
+    .desc { font-size: 14px; color: var(--text-2); line-height: 1.65; margin-bottom: 28px; }
+    .desc strong { color: var(--text); font-weight: 500; }
+
+    /* pills */
+    .pills { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 28px; }
+    .cpill { display: flex; align-items: center; gap: 5px; padding: 5px 11px; border: 1px solid var(--border); border-radius: 100px; font-size: 12px; color: var(--text-2); background: var(--surface-2); }
+    .cpill b { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+    /* buttons */
+    .btn {
+      width: 100%; padding: 15px 22px; border: none; border-radius: 11px;
+      font-family: 'Syne', sans-serif; font-weight: 700; font-size: 15px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      gap: 9px; transition: all 0.2s; letter-spacing: -0.2px;
+    }
+    .btn-main { background: var(--accent); color: #0C0C0A; }
+    .btn-main:hover { background: #7af4a6; transform: translateY(-1px); }
+    .btn-main:active { transform: scale(0.99); }
+    .btn-main:disabled { background: var(--surface-2); color: var(--text-3); cursor: not-allowed; transform: none; }
+    .btn-wa { background: #25D366; color: #fff; text-decoration: none; }
+    .btn-wa:hover { background: #1fba58; transform: translateY(-1px); }
+
+    /* phone input */
+    .phone-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .country-code { padding: 13px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; color: var(--text-2); font-family: 'JetBrains Mono', monospace; font-size: 13px; width: 60px; text-align: center; }
+    .phone-in { flex: 1; padding: 13px 15px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 14px; outline: none; transition: border-color 0.2s; }
+    .phone-in::placeholder { color: var(--text-3); }
+    .phone-in:focus { border-color: rgba(94,240,139,0.3); }
+    .hint { font-size: 11px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; margin-bottom: 22px; }
+
+    /* step 3 preview */
+    .preview { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 22px; }
+    .preview-label { font-size: 10px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; margin-bottom: 10px; letter-spacing: 0.5px; }
+    .bubble { display: inline-block; background: #1e2b33; border-radius: 7px 7px 7px 2px; padding: 9px 13px; font-size: 13px; color: #cdd6db; line-height: 1.5; max-width: 90%; }
+    .bubble-poke { background: #12261e; border-left: 2px solid var(--accent); border-radius: 7px 7px 7px 2px; }
+    .bubble-row { margin-bottom: 6px; overflow: hidden; }
+
+    /* next steps box */
+    .next { margin-top: 18px; padding: 15px; background: var(--surface-2); border-radius: 9px; border: 1px solid var(--border); }
+    .next-label { font-size: 10px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; margin-bottom: 6px; letter-spacing: 0.5px; }
+    .next p { font-size: 13px; color: var(--text-2); line-height: 1.65; }
+
+    /* spinner */
+    .spin { width: 14px; height: 14px; border: 2px solid rgba(12,12,10,0.25); border-top-color: #0C0C0A; border-radius: 50%; animation: s 0.6s linear infinite; display: none; }
+    @keyframes s { to { transform: rotate(360deg); } }
+
+    /* error */
+    .err { font-size: 12px; color: var(--red); font-family: 'JetBrains Mono', monospace; margin-top: 9px; display: none; }
+
+    footer { margin-top: 28px; font-size: 11px; color: var(--text-3); text-align: center; font-family: 'JetBrains Mono', monospace; line-height: 1.8; }
+    footer a { color: var(--text-2); text-decoration: none; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="logo">poke<span>.</span></div>
+    <div class="pill">EARLY ACCESS</div>
+  </header>
+
+  <div class="steps" id="steps">
+    <div class="step-node active" id="sn1">
+      <div class="node-circle" id="nc1">01</div>
+      <div class="node-label">google</div>
+    </div>
+    <div class="step-node" id="sn2">
+      <div class="node-circle" id="nc2">02</div>
+      <div class="node-label">number</div>
+    </div>
+    <div class="step-node" id="sn3">
+      <div class="node-circle" id="nc3">03</div>
+      <div class="node-label">done</div>
+    </div>
+  </div>
+
+  <div class="card">
+
+    <!-- Step 1 -->
+    <div class="panel on" id="p1">
+      <div class="eyebrow">Step 01 — 03</div>
+      <div class="title">Connect your Google account</div>
+      <div class="desc">
+        poke reads your Gmail to figure out who you are —
+        no forms, no questionnaire.
+        One tap and it knows.
+      </div>
+      <div class="pills">
+        <div class="cpill"><b></b>knows your role</div>
+        <div class="cpill"><b></b>reads the room</div>
+        <div class="cpill"><b></b>no questions asked</div>
+      </div>
+      <button class="btn btn-main" id="btn1" onclick="startAuth()">
+        <svg width="17" height="17" viewBox="0 0 18 18" fill="none">
+          <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908C16.658 14.116 17.64 11.808 17.64 9.2z" fill="rgba(12,12,10,0.6)"/>
+          <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="rgba(12,12,10,0.6)"/>
+          <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="rgba(12,12,10,0.6)"/>
+          <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="rgba(12,12,10,0.6)"/>
+        </svg>
+        <span id="btn1-label">Connect Google</span>
+        <div class="spin" id="spin1"></div>
+      </button>
+      <div class="err" id="err1">Something went wrong. Try again.</div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="panel" id="p2">
+      <div class="eyebrow">Step 02 — 03</div>
+      <div class="title">Your WhatsApp number</div>
+      <div class="desc">Where poke will find you.</div>
+      <div class="phone-row">
+        <div class="country-code">+91</div>
+        <input class="phone-in" id="ph" type="tel" placeholder="98765 43210"
+               maxlength="10" inputmode="numeric"
+               onkeydown="if(event.key==='Enter') doPhone()">
+      </div>
+      <div class="hint">10 digits · no spaces</div>
+      <button class="btn btn-main" id="btn2" onclick="doPhone()">
+        <span id="btn2-label">Continue</span>
+        <div class="spin" id="spin2"></div>
+      </button>
+      <div class="err" id="err2">Enter a valid 10-digit number.</div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="panel" id="p3">
+      <div class="eyebrow">Step 03 — 03</div>
+      <div class="title">Say hi</div>
+      <div class="desc">One message and poke already knows who you are.</div>
+
+      <div class="preview">
+        <div class="preview-label">WHAT TO EXPECT</div>
+        <div class="bubble-row"><div class="bubble">Hi</div></div>
+        <div class="bubble-row" style="margin-top:6px">
+          <div class="bubble bubble-poke">
+            hey utkarsh 👋<br>
+            saw you're building the agentic stack at WordsWorth.<br>
+            i know things. ask me anything.
+            <div style="font-size:11px;color:#607d6e;margin-top:4px">~ seconds after you text</div>
+          </div>
+        </div>
+      </div>
+
+      <a class="btn btn-wa" id="wa-btn" href="#" target="_blank">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="white"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+        Open WhatsApp
+      </a>
+
+      <div class="next">
+        <div class="next-label">HOW IT WORKS</div>
+        <p>poke looked you up when you connected Google. the first message is the proof.</p>
+      </div>
+    </div>
+
+  </div><!-- .card -->
+
+  <footer>
+    read-only access · your data never leaves your account<br>
+    <a href="#">privacy</a> &nbsp;·&nbsp; <a href="#">terms</a>
+  </footer>
+
+</div>
+
+<script>
+  const BOT = '919XXXXXXXXX'; // ← replace with your bot number
+  let entityId = localStorage.getItem('eid') || crypto.randomUUID();
+  localStorage.setItem('eid', entityId);
+
+  // ── init ─────────────────────────────────────────────────────────
+  const params = new URLSearchParams(location.search);
+  const urlStep = parseInt(params.get('step') || '0');
+  const urlEntity = params.get('entity_id');
+  if (urlEntity) { entityId = urlEntity; localStorage.setItem('eid', entityId); }
+
+  if (urlStep === 2) { go(2); history.replaceState({}, '', '/'); }
+  else if (urlStep === 3) { go(3); history.replaceState({}, '', '/'); }
+
+  // ── step 1 ────────────────────────────────────────────────────────
+  async function startAuth() {
+    const btn = document.getElementById('btn1');
+    const label = document.getElementById('btn1-label');
+    const spin = document.getElementById('spin1');
+    label.textContent = 'Connecting...';
+    btn.disabled = true;
+    spin.style.display = 'block';
+
+    try {
+      const r = await fetch(`/auth/composio/start?entity_id=${entityId}`);
+      if (!r.ok) throw new Error();
+      const d = await r.json();
+      location.href = d.redirect_url;
+    } catch {
+      label.textContent = 'Connect Google';
+      btn.disabled = false;
+      spin.style.display = 'none';
+      show('err1');
+    }
+  }
+
+  // ── step 2 ────────────────────────────────────────────────────────
+  async function doPhone() {
+    const input = document.getElementById('ph');
+    const phone = input.value.replace(/\D/g, '');
+    if (phone.length !== 10) { show('err2'); input.focus(); return; }
+    hide('err2');
+
+    const btn = document.getElementById('btn2');
+    const label = document.getElementById('btn2-label');
+    const spin = document.getElementById('spin2');
+    label.textContent = 'Saving...';
+    btn.disabled = true;
+    spin.style.display = 'block';
+
+    try {
+      const r = await fetch('/setup/phone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_id: entityId, phone }),
+      });
+      if (!r.ok) throw new Error();
+      const d = await r.json();
+      document.getElementById('wa-btn').href = d.wa_link;
+      go(3);
+    } catch {
+      label.textContent = 'Continue';
+      btn.disabled = false;
+      spin.style.display = 'none';
+      const e = document.getElementById('err2');
+      e.textContent = 'Something went wrong. Try again.';
+      show('err2');
+    }
+  }
+
+  // ── transitions ────────────────────────────────────────────────────
+  function go(n) {
+    [1,2,3].forEach(i => {
+      document.getElementById(`p${i}`).classList.toggle('on', i === n);
+      const sn = document.getElementById(`sn${i}`);
+      const nc = document.getElementById(`nc${i}`);
+      sn.className = 'step-node' + (i < n ? ' done' : i === n ? ' active' : '');
+      nc.innerHTML = i < n
+        ? `<svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 5.5l3 3 5-5" stroke="#22c55e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`
+        : `0${i}`;
+    });
+  }
+
+  function show(id) { document.getElementById(id).style.display = 'block'; }
+  function hide(id) { document.getElementById(id).style.display = 'none'; }
+</script>
+</body>
+</html>
