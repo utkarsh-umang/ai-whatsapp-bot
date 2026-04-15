@@ -13,6 +13,7 @@ import os
 import re
 import json
 import httpx
+import logging
 from collections import Counter
 from composio import Composio
 from models import UserProfile, PersonalityTier
@@ -146,7 +147,12 @@ async def _call_perplexity_agent(prompt: str) -> str:
                 "instructions": _AGENT_INSTRUCTIONS,
             },
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Perplexity API HTTP Error: {e.response.status_code}")
+            logging.error(f"Response Body: {e.response.text}")
+            raise
         data = resp.json()
 
     text_parts: list[str] = []

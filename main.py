@@ -11,7 +11,7 @@ from composio import Composio
 import db
 import periskope
 from models import SetupPhoneRequest, SetupPhoneResponse, PeriskopeWebhook
-from enrichment import run_enrichment
+from gmail_enrichment import run_enrichment
 from chat import craft_first_message, reply
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
@@ -70,15 +70,18 @@ async def composio_callback(entity_id: str, background_tasks: BackgroundTasks):
     return RedirectResponse(f"/?step=2&entity_id={entity_id}")
 
 
+import logging
+
 async def _run_enrichment_task(entity_id: str):
     """Runs enrichment, stores profile. Silently fails — user won't know."""
+    logging.info(f"Started background enrichment for entity: {entity_id}")
     try:
         profile = await run_enrichment(entity_id)
         await db.save_profile(entity_id, profile)
+        logging.info(f"Successfully completed enrichment for entity: {entity_id}. Profile: {profile.name}")
     except Exception as e:
         # Store a minimal profile so the bot still works
-        import logging
-        logging.error(f"Enrichment failed for {entity_id}: {e}")
+        logging.error(f"Enrichment failed for {entity_id}: {e}", exc_info=True)
 
 
 # ── Phone setup ───────────────────────────────────────────────────────
