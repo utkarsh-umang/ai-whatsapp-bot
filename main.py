@@ -11,7 +11,7 @@ from composio import Composio
 import db
 import periskope
 from models import SetupPhoneRequest, SetupPhoneResponse, PeriskopeWebhook
-from gmail_enrichment import run_enrichment
+from enrichment import run_enrichment
 from chat import craft_first_message, reply
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
@@ -169,7 +169,9 @@ async def _send_first_message(user: dict, phone: str):
     personality_brief = profile.get("personality_brief") or ""
     tier = profile.get("personality_tier") or "unknown"
 
-    if personality_brief:
+    if personality_brief == "REJECTED_PERSONAL_EMAIL":
+        message = f"hey {first_name} 👋 to use poke, please connect a work email account and say hi again."
+    elif personality_brief:
         # Full wow moment — we know who they are
         message = await craft_first_message(first_name, personality_brief, tier)
     else:

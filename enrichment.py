@@ -16,10 +16,14 @@ import httpx
 import logging
 from collections import Counter
 from composio import Composio
+from openai import AsyncOpenAI
 from models import UserProfile, PersonalityTier
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 # ── Gmail identity ────────────────────────────────────────────────────
@@ -181,6 +185,69 @@ async def resolve_profile(name: str, email: str, company_domain: str | None) -> 
     return _parse_json(raw)
 
 
+# ── Gmail fetch pipeline ─────────────────────────────────────────────
+
+async def fetch_recent_emails(entity_id: str) -> list[dict]:
+    """Fetch the recent emails via Composio to build context."""
+    res = await asyncio.to_thread(_execute, "GMAIL_FETCH_EMAILS", {}, entity_id)
+    if isinstance(res, list):
+        return res
+    if isinstance(res, dict):
+        return res.get("messages", []) or res.get("emails", []) or [res]
+    return []
+
+_SYNTHESIS_PROMPT = """\
+You are an expert executive analyst. Your goal is to synthesize public web-search data and private recent-email context into a single, cohesive professional profile.
+
+User Name: {name}
+User Email: {email}
+
+=== WEB PROFILE (From Perplexity) ===
+{perplexity_data}
+
+=== RECENT EMAILS (From Inbox) ===
+{emails_data}
+
+Return a STRICT JSON object with this shape:
+{{
+  "name": "full name as publicly known",
+  "role": "current job title (prefer web profile for formality)",
+  "company": "company name (prefer web profile)",
+  "bio": "1-2 sentences: what they work on, what they've built — specific not generic. Use emails for real-time context.",
+  "linkedin": "URL or null",
+  "location": "city/country or null"
+}}
+
+Rules:
+- DO NOT wrap the output in markdown codeblocks. Return pure JSON.
+"""
+
+async def synthesize_profile_with_llm(name: str, email: str, perplexity_data: dict, emails_data: list) -> dict:
+    top_emails = emails_data[:10] if emails_data else []
+    emails_text = json.dumps(top_emails)
+    if len(emails_text) > 40000:
+        emails_text = emails_text[:40000]
+
+    prompt = _SYNTHESIS_PROMPT.format(
+        name=name, email=email,
+        perplexity_data=json.dumps(perplexity_data, indent=2),
+        emails_data=emails_text
+    )
+
+    try:
+        resp = await _client.chat.completions.create(
+            model="gpt-4o",
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400
+        )
+        return json.loads(resp.choices[0].message.content.strip())
+    except Exception as e:
+        logging.error(f"Synthesis failed: {e}")
+        return perplexity_data
+
+
+
 # ── Personality tier classification ──────────────────────────────────
 
 def classify_tier(role: str | None, company: str | None, bio: str | None) -> PersonalityTier:
@@ -262,30 +329,54 @@ async def run_enrichment(entity_id: str) -> UserProfile:
     name, email, company_domain = await get_gmail_identity(entity_id)
     first_name = name.split()[0].capitalize() if name else "there"
 
-    perplexity_data = await resolve_profile(name, email, company_domain)
-
-    # Merge — Perplexity data preferred, Gmail as fallback
-    merged = {
-        "name": perplexity_data.get("name") or name,
-        "role": perplexity_data.get("role"),
-        "company": perplexity_data.get("company"),
-        "bio": perplexity_data.get("bio"),
-        "linkedin": perplexity_data.get("linkedin"),
-        "location": perplexity_data.get("location"),
+    PERSONAL = {
+        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+        "icloud.com", "me.com", "proton.me", "protonmail.com",
     }
+    email_domain = email.split("@")[-1] if email else ""
 
-    tier = classify_tier(merged["role"], merged["company"], merged["bio"])
+    if email_domain in PERSONAL:
+        # Halt execution, return a specific bounce flag for main.py to handle
+        return UserProfile(
+            name=name,
+            email=email,
+            first_name=first_name,
+            role=None,
+            company=None,
+            bio=None,
+            linkedin=None,
+            location=None,
+            personality_tier="unknown",
+            personality_brief="REJECTED_PERSONAL_EMAIL"
+        )
+
+    # Spawn both tasks concurrently
+    fetch_task = asyncio.create_task(fetch_recent_emails(entity_id))
+    perplexity_task = asyncio.create_task(resolve_profile(name, email, company_domain))
+    
+    emails_data_res, perplexity_res = await asyncio.gather(fetch_task, perplexity_task, return_exceptions=True)
+    
+    emails_data = emails_data_res if not isinstance(emails_data_res, Exception) else []
+    if isinstance(perplexity_res, Exception):
+        logging.error(f"Perplexity failed: {perplexity_res}")
+        perplexity_data = {}
+    else:
+        perplexity_data = perplexity_res
+
+    merged = await synthesize_profile_with_llm(name, email, perplexity_data, emails_data)
+
+    tier = classify_tier(merged.get("role"), merged.get("company"), merged.get("bio"))
     brief = build_personality_brief(merged, tier)
 
     return UserProfile(
-        name=merged["name"],
+        name=merged.get("name") or name,
         email=email,
         first_name=first_name,
-        role=merged["role"],
-        company=merged["company"],
-        bio=merged["bio"],
-        linkedin=merged["linkedin"],
-        location=merged["location"],
+        role=merged.get("role"),
+        company=merged.get("company"),
+        bio=merged.get("bio"),
+        linkedin=merged.get("linkedin"),
+        location=merged.get("location"),
         personality_tier=tier,
         personality_brief=brief,
     )
