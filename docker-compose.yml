@@ -1,0 +1,25 @@
+services:
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27047:27017"          # host:27047 → container:27017
+    volumes:
+      - mongo_data:/data/db
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    env_file:
+      - .env
+    environment:
+      # Override the URL so the app reaches Mongo via Docker's internal network
+      MONGODB_URL: mongodb://mongo:27017
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:

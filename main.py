@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from composio_langchain import ComposioToolSet, App
+from composio import Composio
 
 import db
 import periskope
@@ -15,6 +15,8 @@ from enrichment import run_enrichment
 from chat import craft_first_message, reply
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
+# Create this in Composio dashboard → Auth Configs → Gmail → copy the config ID
+COMPOSIO_GMAIL_AUTH_CONFIG_ID = os.getenv("COMPOSIO_GMAIL_AUTH_CONFIG_ID")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 BOT_PHONE = os.getenv("BOT_PHONE", "919XXXXXXXXX")
 
@@ -46,13 +48,14 @@ async def composio_start(entity_id: str = None):
 
     await db.upsert_user(entity_id, {"entity_id": entity_id, "status": "pending_auth"})
 
-    toolset = ComposioToolSet(api_key=COMPOSIO_API_KEY)
-    req = toolset.initiate_connection(
-        app=App.GMAIL,
-        entity_id=entity_id,
-        redirect_url=f"{BASE_URL}/auth/composio/callback?entity_id={entity_id}",
+    composio = Composio(api_key=COMPOSIO_API_KEY)
+    req = await asyncio.to_thread(
+        composio.connected_accounts.link,
+        entity_id,
+        COMPOSIO_GMAIL_AUTH_CONFIG_ID,
+        callback_url=f"{BASE_URL}/auth/composio/callback?entity_id={entity_id}",
     )
-    return {"redirect_url": req.redirectUrl, "entity_id": entity_id}
+    return {"redirect_url": req.redirect_url, "entity_id": entity_id}
 
 
 @app.get("/auth/composio/callback")

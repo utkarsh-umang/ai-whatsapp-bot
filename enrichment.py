@@ -8,12 +8,13 @@ We then classify a personality tier and build a personality_brief
 that gets injected into every system prompt for this user.
 """
 
+import asyncio
 import os
 import re
 import json
 import httpx
 from collections import Counter
-from composio_langchain import ComposioToolSet, Action
+from composio import Composio
 from models import UserProfile, PersonalityTier
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
@@ -22,24 +23,34 @@ PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
 # ── Gmail identity ────────────────────────────────────────────────────
 
+def _composio() -> Composio:
+    return Composio(api_key=COMPOSIO_API_KEY)
+
+
+def _execute(slug: str, arguments: dict, user_id: str) -> dict:
+    """Synchronous Composio tool execution — always call via asyncio.to_thread."""
+    result = _composio().tools.execute(slug, arguments, user_id=user_id)
+    # ToolExecutionResponse is dict-like; unwrap common response shapes
+    if isinstance(result, dict):
+        return result.get("data") or result
+    return {}
+
+
 async def get_gmail_identity(entity_id: str) -> tuple[str, str, str | None]:
     """Returns (name, email, company_domain | None)."""
-    toolset = ComposioToolSet(api_key=COMPOSIO_API_KEY)
-
-    profile = toolset.execute_action(
-        action=Action.GMAIL_GET_PROFILE,
-        params={},
-        entity_id=entity_id,
+    profile = await asyncio.to_thread(
+        _execute, "GMAIL_GET_PROFILE", {}, entity_id
     )
     email: str = profile.get("emailAddress", "")
     name: str = profile.get("name") or _name_from_email(email)
 
     company_domain: str | None = None
     try:
-        people = toolset.execute_action(
-            action=Action.GMAIL_SEARCH_PEOPLE,
-            params={"query": name, "page_size": 20},
-            entity_id=entity_id,
+        people = await asyncio.to_thread(
+            _execute,
+            "GMAIL_SEARCH_PEOPLE",
+            {"query": name, "page_size": 20},
+            entity_id,
         )
         company_domain = _infer_company_domain(email, people)
     except Exception:
@@ -109,29 +120,26 @@ If a field is genuinely not findable, use null. Never guess or hallucinate.
 """
 
 
-def _call_perplexity(prompt: str) -> str:
-    with httpx.Client(timeout=120.0) as client:
-        resp = client.post(
-            "https://api.perplexity.ai/v1/agent",
+async def _call_perplexity(prompt: str) -> str:
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            "https://api.perplexity.ai/chat/completions",
             headers={
                 "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
                 "Content-Type": "application/json",
             },
             json={
-                "preset": "pro-search",
-                "input": prompt,
-                "instructions": _AGENT_INSTRUCTIONS,
+                "model": "sonar-pro",
+                "messages": [
+                    {"role": "system", "content": _AGENT_INSTRUCTIONS},
+                    {"role": "user", "content": prompt},
+                ],
             },
         )
         resp.raise_for_status()
         data = resp.json()
 
-    parts = []
-    for item in data.get("output", []):
-        for block in item.get("content", []):
-            if block.get("type") == "output_text":
-                parts.append(block.get("text", ""))
-    return "".join(parts).strip()
+    return data["choices"][0]["message"]["content"].strip()
 
 
 def _parse_json(raw: str) -> dict:
@@ -142,12 +150,12 @@ def _parse_json(raw: str) -> dict:
         return {}
 
 
-def resolve_profile(name: str, email: str, company_domain: str | None) -> dict:
+async def resolve_profile(name: str, email: str, company_domain: str | None) -> dict:
     parts = [f"Name: {name}", f"Email: {email}"]
     if company_domain:
         parts.append(f"Company domain: {company_domain}")
     prompt = _PROFILE_PROMPT.format(available_info="\n".join(parts))
-    raw = _call_perplexity(prompt)
+    raw = await _call_perplexity(prompt)
     return _parse_json(raw)
 
 
@@ -232,7 +240,7 @@ async def run_enrichment(entity_id: str) -> UserProfile:
     name, email, company_domain = await get_gmail_identity(entity_id)
     first_name = name.split()[0].capitalize() if name else "there"
 
-    perplexity_data = resolve_profile(name, email, company_domain)
+    perplexity_data = await resolve_profile(name, email, company_domain)
 
     # Merge — Perplexity data preferred, Gmail as fallback
     merged = {

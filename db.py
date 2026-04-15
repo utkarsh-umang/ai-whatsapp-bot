@@ -14,7 +14,7 @@ def get_db():
 
 async def connect():
     global _client
-    _client = AsyncIOMotorClient(os.getenv("MONGODB_URL", "mongodb://localhost:27017"))
+    _client = AsyncIOMotorClient(os.getenv("MONGODB_URL", "mongodb://localhost:27047"))
 
 
 async def disconnect():
