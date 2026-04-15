@@ -1,2 +1,5 @@
 .env
 .DS_Store
+composio.py
+__pycache__/
+.venv/
