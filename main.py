@@ -18,7 +18,8 @@ COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 # Create this in Composio dashboard → Auth Configs → Gmail → copy the config ID
 COMPOSIO_GMAIL_AUTH_CONFIG_ID = os.getenv("COMPOSIO_GMAIL_AUTH_CONFIG_ID")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
-BOT_PHONE = os.getenv("BOT_PHONE", "919XXXXXXXXX")
+# This is the bot's phone number used for the "Click to Chat" link
+BOT_PHONE = os.getenv("PERISKOPE_PHONE", "919XXXXXXXXX")
 
 
 @asynccontextmanager
