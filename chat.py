@@ -2,23 +2,23 @@
 The chatbot.
 
 Two modes:
-  first_message()  — called once, right after enrichment completes.
-                     Crafts the wow moment — references what we found about them.
-  reply()          — all subsequent messages. Loads history, calls Claude,
-                     saves both turns to MongoDB.
+  craft_first_message()  — called once after enrichment. The wow moment.
+  reply()                — all subsequent messages. Loads history, calls GPT,
+                           saves both turns to MongoDB.
 
-Personality adjusts per tier. Memory is injected as raw conversation history.
+Personality adjusts per tier. Memory is injected as conversation history.
 """
 
 import os
-from anthropic import Anthropic
+from openai import AsyncOpenAI
 from models import PersonalityTier
 import db
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-MODEL = "claude-haiku-4-5-20251001"   # fast, cheap, good enough for chat
+MODEL_FIRST  = "gpt-4o"       # better creative writing for the wow moment
+MODEL_CHAT   = "gpt-4o-mini"  # fast + cheap for ongoing replies
 
 
 # ── Personality system prompts per tier ──────────────────────────────
@@ -131,7 +131,7 @@ Write just the message. No quotes, no explanation.
 """
 
 
-def craft_first_message(
+async def craft_first_message(
     first_name: str,
     personality_brief: str,
     tier: PersonalityTier,
@@ -141,13 +141,12 @@ def craft_first_message(
         personality_brief=personality_brief,
         tier=tier,
     )
-    # Use a slightly smarter model for the first impression
-    resp = Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-        model="claude-sonnet-4-6",
+    resp = await _client.chat.completions.create(
+        model=MODEL_FIRST,
         max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )
-    return resp.content[0].text.strip()
+    return resp.choices[0].message.content.strip()
 
 
 # ── Ongoing replies ───────────────────────────────────────────────────
@@ -158,29 +157,21 @@ async def reply(
     tier: PersonalityTier,
     personality_brief: str | None,
 ) -> str:
-    """
-    Load conversation history, call Claude, save both turns, return response.
-    """
-    # Load history
+    """Load conversation history, call GPT, save both turns, return response."""
     history = await db.get_history(phone)
 
-    # Build messages for Claude API
-    messages = []
+    messages = [{"role": "system", "content": _build_system(tier, personality_brief)}]
     for turn in history:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_message})
 
-    system = _build_system(tier, personality_brief)
-
-    resp = _client.messages.create(
-        model=MODEL,
+    resp = await _client.chat.completions.create(
+        model=MODEL_CHAT,
         max_tokens=500,
-        system=system,
         messages=messages,
     )
-    response_text = resp.content[0].text.strip()
+    response_text = resp.choices[0].message.content.strip()
 
-    # Persist both turns
     await db.append_message(phone, "user", user_message)
     await db.append_message(phone, "assistant", response_text)
 

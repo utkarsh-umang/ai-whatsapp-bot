@@ -168,7 +168,7 @@ async def _send_first_message(user: dict, phone: str):
 
     if personality_brief:
         # Full wow moment — we know who they are
-        message = craft_first_message(first_name, personality_brief, tier)
+        message = await craft_first_message(first_name, personality_brief, tier)
     else:
         # Enrichment failed or is still running — graceful fallback
         message = f"hey {first_name} 👋 you're in. just talk to me."
