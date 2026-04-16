@@ -59,7 +59,15 @@ async def save_profile(entity_id: str, profile: UserProfile):
 #
 # We store flat messages (not nested) so we can query latest N efficiently.
 
+def _conversation_query(user: dict) -> dict:
+    """WhatsApp users keyed by phone; web chat keyed by entity_id."""
+    if user.get("phone"):
+        return {"phone": user["phone"]}
+    return {"entity_id": user["entity_id"]}
+
+
 async def append_message(phone: str, role: str, content: str):
+    """Legacy: phone-only conversations (WhatsApp)."""
     await get_db().conversations.insert_one({
         "phone": phone,
         "role": role,
@@ -68,8 +76,14 @@ async def append_message(phone: str, role: str, content: str):
     })
 
 
+async def append_message_for_user(user: dict, role: str, content: str):
+    q = _conversation_query(user)
+    doc = {**q, "role": role, "content": content, "ts": datetime.utcnow()}
+    await get_db().conversations.insert_one(doc)
+
+
 async def get_history(phone: str) -> list[dict]:
-    """Returns last MAX_HISTORY_TURNS messages, oldest first."""
+    """Returns last MAX_HISTORY_TURNS messages, oldest first (phone-keyed)."""
     cursor = (
         get_db().conversations
         .find({"phone": phone}, {"_id": 0, "role": 1, "content": 1})
@@ -77,4 +91,17 @@ async def get_history(phone: str) -> list[dict]:
         .limit(MAX_HISTORY_TURNS)
     )
     docs = await cursor.to_list(length=MAX_HISTORY_TURNS)
-    return list(reversed(docs))   # oldest → newest
+    return list(reversed(docs))
+
+
+async def get_history_for_user(user: dict) -> list[dict]:
+    """Last N messages for this user (WhatsApp or web)."""
+    q = _conversation_query(user)
+    cursor = (
+        get_db().conversations
+        .find(q, {"_id": 0, "role": 1, "content": 1})
+        .sort("ts", -1)
+        .limit(MAX_HISTORY_TURNS)
+    )
+    docs = await cursor.to_list(length=MAX_HISTORY_TURNS)
+    return list(reversed(docs))

@@ -32,7 +32,7 @@ class User(BaseModel):
     phone: Optional[str] = None            # WA number with country code, no +
     email: Optional[str] = None
     name: Optional[str] = None
-    status: str = "pending_auth"           # pending_auth → pending_phone → pending_first_message → active
+    status: str = "pending_auth"           # pending_auth → pending_first_message → active (optional pending_phone via /setup/phone)
     profile: Optional[UserProfile] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -52,6 +52,15 @@ class SetupPhoneRequest(BaseModel):
 
 class SetupPhoneResponse(BaseModel):
     wa_link: str
+
+
+class ChatSendRequest(BaseModel):
+    entity_id: str
+    message: str
+
+
+class ChatSendResponse(BaseModel):
+    reply: str
 
 
 # ── Periskope webhook ─────────────────────────────────────────────────

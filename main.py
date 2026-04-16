@@ -10,7 +10,13 @@ from composio import Composio
 
 import db
 import periskope
-from models import SetupPhoneRequest, SetupPhoneResponse, PeriskopeWebhook
+from models import (
+    SetupPhoneRequest,
+    SetupPhoneResponse,
+    PeriskopeWebhook,
+    ChatSendRequest,
+    ChatSendResponse,
+)
 from enrichment import run_enrichment
 from chat import craft_first_message, reply
 
@@ -61,11 +67,10 @@ async def composio_start(entity_id: str = None):
 
 @app.get("/auth/composio/callback")
 async def composio_callback(entity_id: str, background_tasks: BackgroundTasks):
-    """Gmail OAuth is done. Fire enrichment in background, send to step 2."""
-    await db.set_status(entity_id, "pending_phone")
+    """Gmail OAuth is done. Fire enrichment in background; user continues to hi + chat."""
+    await db.set_status(entity_id, "pending_first_message")
 
-    # Start enrichment immediately — it'll be done by the time they enter
-    # their phone and text the bot (typically 15-25 seconds total)
+    # Start enrichment immediately — usually ready before they open chat
     background_tasks.add_task(_run_enrichment_task, entity_id)
 
     return RedirectResponse(f"/?step=2&entity_id={entity_id}")
@@ -117,6 +122,43 @@ async def get_status(entity_id: str):
     return JSONResponse({"status": user.get("status", "unknown") if user else "not_found"})
 
 
+@app.get("/api/chat/history/{entity_id}")
+async def api_chat_history(entity_id: str):
+    user = await db.get_user_by_entity(entity_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    messages = await db.get_history_for_user(user)
+    return JSONResponse({"messages": messages})
+
+
+@app.post("/api/chat", response_model=ChatSendResponse)
+async def api_chat(body: ChatSendRequest):
+    user = await db.get_user_by_entity(body.entity_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(422, "Message required")
+
+    status = user.get("status")
+    if status == "pending_auth":
+        raise HTTPException(400, "Complete Google sign-in first.")
+
+    if status == "pending_first_message":
+        reply_text = await _first_message_web(user, text)
+        return ChatSendResponse(reply=reply_text)
+
+    if status == "active":
+        profile = user.get("profile") or {}
+        tier = profile.get("personality_tier") or "unknown"
+        brief = profile.get("personality_brief")
+        reply_text = await reply(text, tier, brief, user=user)
+        return ChatSendResponse(reply=reply_text)
+
+    raise HTTPException(400, "Cannot chat in this state.")
+
+
 # ── Periskope webhook ─────────────────────────────────────────────────
 
 @app.post("/webhook/periskope")
@@ -159,7 +201,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
     # ── Active → normal chat ──────────────────────────────────────────
     if status == "active":
-        background_tasks.add_task(_chat, user, body, phone)
+        background_tasks.add_task(_chat, user, body)
         return JSONResponse({"ok": True})
 
     return JSONResponse({"ok": True})
@@ -181,16 +223,36 @@ async def _send_first_message(user: dict, phone: str):
     await periskope.send(phone, message)
 
     # Save to history so future turns have context of the first message
-    await db.append_message(phone, "assistant", message)
+    await db.append_message_for_user(user, "assistant", message)
 
 
-async def _chat(user: dict, message: str, phone: str):
+async def _chat(user: dict, message: str):
     profile = user.get("profile") or {}
     tier = profile.get("personality_tier") or "unknown"
     brief = profile.get("personality_brief")
+    phone = user.get("phone")
+    if not phone:
+        return
 
     try:
-        response = await reply(phone, message, tier, brief)
+        response = await reply(message, tier, brief, user=user)
         await periskope.send(phone, response)
     except Exception:
         await periskope.send(phone, "something broke on my end, try again?")
+
+
+async def _first_message_web(user: dict, user_text: str) -> str:
+    profile = user.get("profile") or {}
+    first_name = profile.get("first_name") or user.get("name", "").split()[0] or "hey"
+    personality_brief = profile.get("personality_brief") or ""
+    tier = profile.get("personality_tier") or "unknown"
+
+    if personality_brief:
+        message = await craft_first_message(first_name, personality_brief, tier)
+    else:
+        message = f"hey {first_name} 👋 you're in. just talk to me."
+
+    await db.append_message_for_user(user, "user", user_text)
+    await db.append_message_for_user(user, "assistant", message)
+    await db.set_status(user["entity_id"], "active")
+    return message

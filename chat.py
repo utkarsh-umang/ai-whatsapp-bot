@@ -13,6 +13,7 @@ import os
 from openai import AsyncOpenAI
 from models import PersonalityTier
 import db
+from typing import Any
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -152,13 +153,14 @@ async def craft_first_message(
 # ── Ongoing replies ───────────────────────────────────────────────────
 
 async def reply(
-    phone: str,
     user_message: str,
     tier: PersonalityTier,
     personality_brief: str | None,
+    *,
+    user: dict[str, Any],
 ) -> str:
     """Load conversation history, call GPT, save both turns, return response."""
-    history = await db.get_history(phone)
+    history = await db.get_history_for_user(user)
 
     messages = [{"role": "system", "content": _build_system(tier, personality_brief)}]
     for turn in history:
@@ -172,7 +174,7 @@ async def reply(
     )
     response_text = resp.choices[0].message.content.strip()
 
-    await db.append_message(phone, "user", user_message)
-    await db.append_message(phone, "assistant", response_text)
+    await db.append_message_for_user(user, "user", user_message)
+    await db.append_message_for_user(user, "assistant", response_text)
 
     return response_text
