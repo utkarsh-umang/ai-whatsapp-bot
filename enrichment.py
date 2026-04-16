@@ -16,14 +16,10 @@ import httpx
 import logging
 from collections import Counter
 from composio import Composio
-from openai import AsyncOpenAI
 from models import UserProfile, PersonalityTier
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 # ── Gmail identity ────────────────────────────────────────────────────
@@ -118,7 +114,9 @@ Build a professional profile for this person using their online presence.
 Known info:
 {available_info}
 
-Search for them using name + company/domain to avoid confusing them with someone else.
+{social_hint}Search for them using the identifiers above to avoid confusing them with someone else.
+If a LinkedIn URL is provided, prioritise that as the primary source.
+If an Instagram handle is provided, use it as a secondary signal for their public persona.
 
 Return ONLY this JSON shape:
 {{
@@ -176,75 +174,139 @@ def _parse_json(raw: str) -> dict:
         return {}
 
 
-async def resolve_profile(name: str, email: str, company_domain: str | None) -> dict:
+async def resolve_profile(
+    name: str,
+    email: str,
+    company_domain: str | None,
+    social_handles: dict[str, str | None] | None = None,
+) -> dict:
     parts = [f"Name: {name}", f"Email: {email}"]
     if company_domain:
         parts.append(f"Company domain: {company_domain}")
-    prompt = _PROFILE_PROMPT.format(available_info="\n".join(parts))
+
+    social_hint = ""
+    handles = social_handles or {}
+
+    if handles.get("linkedin_headline"):
+        parts.append(f"LinkedIn headline: {handles['linkedin_headline']}")
+        social_hint = (
+            "The person's own LinkedIn headline has been extracted directly from a "
+            "LinkedIn notification email sent to them — treat it as ground truth for "
+            "their current role and company. Use it to anchor your search. "
+        )
+    if handles.get("linkedin_url"):
+        parts.append(f"LinkedIn profile: {handles['linkedin_url']}")
+        social_hint += "A LinkedIn profile URL is also available — use it as the primary source. "
+    if handles.get("instagram"):
+        parts.append(f"Instagram handle: @{handles['instagram']}")
+        if not handles.get("linkedin_headline") and not handles.get("linkedin_url"):
+            social_hint = "An Instagram handle has been provided — use it to cross-reference their public persona. "
+
+    prompt = _PROFILE_PROMPT.format(
+        available_info="\n".join(parts),
+        social_hint=social_hint,
+    )
     raw = await _call_perplexity_agent(prompt)
     return _parse_json(raw)
 
 
-# ── Gmail fetch pipeline ─────────────────────────────────────────────
+# ── Social platform email pipeline ───────────────────────────────────
 
-async def fetch_recent_emails(entity_id: str) -> list[dict]:
-    """Fetch the recent emails via Composio to build context."""
-    res = await asyncio.to_thread(_execute, "GMAIL_FETCH_EMAILS", {}, entity_id)
-    if isinstance(res, list):
-        return res
-    if isinstance(res, dict):
-        return res.get("messages", []) or res.get("emails", []) or [res]
+_SOCIAL_EMAIL_QUERY = (
+    "from:mail.instagram.com OR from:facebookmail.com "
+    "OR from:notification.instagram.com OR from:linkedin.com"
+)
+
+async def fetch_social_platform_emails(entity_id: str) -> list[dict]:
+    """Search Gmail for Instagram and LinkedIn notification emails."""
+    logging.info(f"[enrichment] fetching social platform emails for {entity_id}")
+    raw = await asyncio.to_thread(
+        _execute,
+        "GMAIL_FETCH_EMAILS",
+        {"query": _SOCIAL_EMAIL_QUERY, "max_results": 20},
+        entity_id,
+    )
+    logging.info(f"[enrichment] GMAIL_FETCH_EMAILS raw type={type(raw).__name__} keys={list(raw.keys()) if isinstance(raw, dict) else 'n/a'}")
+    logging.debug(f"[enrichment] GMAIL_FETCH_EMAILS raw={raw}")
+
+    if isinstance(raw, list):
+        logging.info(f"[enrichment] got {len(raw)} social emails (list)")
+        return raw
+    if isinstance(raw, dict):
+        emails = raw.get("messages", []) or raw.get("emails", []) or [raw]
+        logging.info(f"[enrichment] got {len(emails)} social emails (dict)")
+        return emails
+    logging.warning(f"[enrichment] unexpected GMAIL_FETCH_EMAILS response type: {type(raw)}")
     return []
 
-_SYNTHESIS_PROMPT = """\
-You are an expert executive analyst. Your goal is to synthesize public web-search data and private recent-email context into a single, cohesive professional profile.
 
-User Name: {name}
-User Email: {email}
+def extract_social_handles(emails: list[dict]) -> dict[str, str | None]:
+    """
+    Parse Instagram/LinkedIn platform emails to extract the user's own
+    social signals. Returns:
+      - instagram: handle | None
+      - linkedin_url: profile URL | None
+      - linkedin_headline: the user's own LinkedIn headline from the
+          "This email was intended for Name (Headline)" footer | None
+    """
+    instagram_handle: str | None = None
+    linkedin_url: str | None = None
+    linkedin_headline: str | None = None
 
-=== WEB PROFILE (From Perplexity) ===
-{perplexity_data}
+    def _str(val) -> str:
+        if isinstance(val, str):
+            return val
+        if isinstance(val, dict):
+            return json.dumps(val)
+        return str(val) if val is not None else ""
 
-=== RECENT EMAILS (From Inbox) ===
-{emails_data}
+    for email in emails:
+        text = " ".join(filter(None, [
+            _str(email.get("messageText")),
+            _str(email.get("preview")),
+            _str(email.get("subject")),
+        ]))
+        sender = _str(email.get("sender"))
+        logging.debug(f"[enrichment] email sender={sender!r} text_len={len(text)}")
 
-Return a STRICT JSON object with this shape:
-{{
-  "name": "full name as publicly known",
-  "role": "current job title (prefer web profile for formality)",
-  "company": "company name (prefer web profile)",
-  "bio": "1-2 sentences: what they work on, what they've built — specific not generic. Use emails for real-time context.",
-  "linkedin": "URL or null",
-  "location": "city/country or null"
-}}
+        if "instagram" in sender.lower():
+            if not instagram_handle:
+                # Instagram profile URLs in email body
+                m = re.search(r'instagram\.com/([A-Za-z0-9._]+)(?:/|\?|$|\s)', text)
+                if m and m.group(1) not in ("accounts", "p", "explore", "stories", "direct"):
+                    instagram_handle = m.group(1)
+                # Fallback: "@username" mention in body
+                if not instagram_handle:
+                    m = re.search(r'@([A-Za-z0-9._]{3,30})', text)
+                    if m:
+                        instagram_handle = m.group(1)
 
-Rules:
-- DO NOT wrap the output in markdown codeblocks. Return pure JSON.
-"""
+        if "linkedin" in sender.lower():
+            # Profile URL (not always present)
+            if not linkedin_url:
+                m = re.search(r'linkedin\.com/in/([A-Za-z0-9\-]+)', text)
+                if m:
+                    linkedin_url = f"https://www.linkedin.com/in/{m.group(1)}"
 
-async def synthesize_profile_with_llm(name: str, email: str, perplexity_data: dict, emails_data: list) -> dict:
-    top_emails = emails_data[:10] if emails_data else []
-    emails_text = json.dumps(top_emails)
-    if len(emails_text) > 40000:
-        emails_text = emails_text[:40000]
+            # LinkedIn footer: "This email was intended for Name (Headline)"
+            # This appears in every LinkedIn notification email and contains
+            # the user's own current headline.
+            if not linkedin_headline:
+                m = re.search(
+                    r'[Tt]his email was intended for [^(]+?\(([^)]+)\)',
+                    text,
+                )
+                if m:
+                    linkedin_headline = m.group(1).strip()
 
-    prompt = _SYNTHESIS_PROMPT.format(
-        name=name, email=email,
-        perplexity_data=json.dumps(perplexity_data, indent=2),
-        emails_data=emails_text
-    )
+        if instagram_handle and linkedin_url and linkedin_headline:
+            break
 
-    try:
-        resp = await _client.chat.completions.create(
-            model="gpt-4o",
-            response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=400
-        )
-        return json.loads(resp.choices[0].message.content.strip())
-    except Exception as e:
-        logging.error(f"Synthesis failed: {e}")
-        return perplexity_data
+    return {
+        "instagram": instagram_handle,
+        "linkedin_url": linkedin_url,
+        "linkedin_headline": linkedin_headline,
+    }
 
 
 
@@ -326,44 +388,36 @@ async def run_enrichment(entity_id: str) -> UserProfile:
     Full pipeline. Returns a UserProfile with personality_brief populated.
     Call this after Gmail OAuth completes.
     """
+    logging.info(f"[enrichment] starting pipeline for entity={entity_id}")
     name, email, company_domain = await get_gmail_identity(entity_id)
+    logging.info(f"[enrichment] identity: name={name!r} email={email!r} domain={company_domain!r}")
     first_name = name.split()[0].capitalize() if name else "there"
 
-    PERSONAL = {
-        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-        "icloud.com", "me.com", "proton.me", "protonmail.com",
-    }
-    email_domain = email.split("@")[-1] if email else ""
+    # Step 1: Find Instagram/LinkedIn notification emails → extract handles
+    try:
+        social_emails = await fetch_social_platform_emails(entity_id)
+        # Log first email structure so we can verify field names
+        if social_emails:
+            logging.info(f"[enrichment] first social email keys: {list(social_emails[0].keys())}")
+            logging.debug(f"[enrichment] first social email: {social_emails[0]}")
+        social_handles = extract_social_handles(social_emails)
+        logging.info(f"[enrichment] extracted handles: {social_handles}")
+    except Exception as e:
+        logging.error(f"[enrichment] social email fetch/extract failed: {e}", exc_info=True)
+        social_handles = {"instagram": None, "linkedin_url": None, "linkedin_headline": None}
 
-    if email_domain in PERSONAL:
-        # Halt execution, return a specific bounce flag for main.py to handle
-        return UserProfile(
-            name=name,
-            email=email,
-            first_name=first_name,
-            role=None,
-            company=None,
-            bio=None,
-            linkedin=None,
-            location=None,
-            personality_tier="unknown",
-            personality_brief="REJECTED_PERSONAL_EMAIL"
-        )
+    # Step 2: Perplexity search — now enriched with social handles
+    logging.info(f"[enrichment] calling Perplexity with handles={social_handles}")
+    try:
+        merged = await resolve_profile(name, email, company_domain, social_handles)
+        logging.info(f"[enrichment] Perplexity result: {merged}")
+    except Exception as e:
+        logging.error(f"[enrichment] Perplexity failed: {e}", exc_info=True)
+        merged = {}
 
-    # Spawn both tasks concurrently
-    fetch_task = asyncio.create_task(fetch_recent_emails(entity_id))
-    perplexity_task = asyncio.create_task(resolve_profile(name, email, company_domain))
-    
-    emails_data_res, perplexity_res = await asyncio.gather(fetch_task, perplexity_task, return_exceptions=True)
-    
-    emails_data = emails_data_res if not isinstance(emails_data_res, Exception) else []
-    if isinstance(perplexity_res, Exception):
-        logging.error(f"Perplexity failed: {perplexity_res}")
-        perplexity_data = {}
-    else:
-        perplexity_data = perplexity_res
-
-    merged = await synthesize_profile_with_llm(name, email, perplexity_data, emails_data)
+    # Patch in the LinkedIn URL we extracted if Perplexity didn't find one
+    if not merged.get("linkedin") and social_handles.get("linkedin_url"):
+        merged["linkedin"] = social_handles["linkedin_url"]
 
     tier = classify_tier(merged.get("role"), merged.get("company"), merged.get("bio"))
     brief = build_personality_brief(merged, tier)

@@ -72,6 +72,7 @@ async def composio_callback(entity_id: str, background_tasks: BackgroundTasks):
 
 
 import logging
+logging.basicConfig(level=logging.INFO)
 
 async def _run_enrichment_task(entity_id: str):
     """Runs enrichment, stores profile. Silently fails — user won't know."""
@@ -170,9 +171,7 @@ async def _send_first_message(user: dict, phone: str):
     personality_brief = profile.get("personality_brief") or ""
     tier = profile.get("personality_tier") or "unknown"
 
-    if personality_brief == "REJECTED_PERSONAL_EMAIL":
-        message = f"hey {first_name} 👋 to use poke, please connect a work email account and say hi again."
-    elif personality_brief:
+    if personality_brief:
         # Full wow moment — we know who they are
         message = await craft_first_message(first_name, personality_brief, tier)
     else:
