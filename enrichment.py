@@ -3,9 +3,9 @@ Context enrichment pipeline.
 
 Gmail OAuth gives us name + email.
 GMAIL_SEARCH_PEOPLE gives us company domain.
-Perplexity Agent API (pro-search) resolves the full professional profile.
-We then classify a personality tier and build a personality_brief
-that gets injected into every system prompt for this user.
+We fetch social notification emails, run an LLM to extract structured account signals,
+merge regex fallbacks, then call Perplexity Agent API (pro-search) for the full profile.
+We classify a personality tier, build personality_brief, and persist EnrichmentPayload in MongoDB.
 """
 
 import asyncio
@@ -16,10 +16,21 @@ import httpx
 import logging
 from collections import Counter
 from composio import Composio
-from models import UserProfile, PersonalityTier
+from openai import AsyncOpenAI
+from models import (
+    UserProfile,
+    PersonalityTier,
+    SocialEmailInsights,
+    SocialPlatformAccount,
+    EnrichmentPayload,
+    PerplexitySnapshot,
+)
 
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+_openai = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+_SOCIAL_EXTRACT_MODEL = "gpt-4o-mini"
 
 
 # ── Gmail identity ────────────────────────────────────────────────────
@@ -114,9 +125,9 @@ Build a professional profile for this person using their online presence.
 Known info:
 {available_info}
 
-{social_hint}Search for them using the identifiers above to avoid confusing them with someone else.
-If a LinkedIn URL is provided, prioritise that as the primary source.
-If an Instagram handle is provided, use it as a secondary signal for their public persona.
+{social_email_block}Search for them using the identifiers above to avoid confusing them with someone else.
+If the structured social-email section includes LinkedIn URLs or headlines, treat those as strong signals.
+If it includes Instagram or other handles, use them to disambiguate and enrich persona.
 
 Return ONLY this JSON shape:
 {{
@@ -174,40 +185,61 @@ def _parse_json(raw: str) -> dict:
         return {}
 
 
+def _format_social_insights_for_perplexity(insights: SocialEmailInsights) -> str:
+    if not insights.summary and not insights.accounts:
+        return ""
+    lines = []
+    if insights.summary:
+        lines.append(f"Summary from notification emails: {insights.summary}")
+    if insights.extraction_notes:
+        lines.append(f"Extraction notes: {insights.extraction_notes}")
+    lines.append(f"Confidence (email agent): {insights.confidence}")
+    for acc in insights.accounts:
+        bits = [f"platform={acc.platform}"]
+        if acc.handle:
+            bits.append(f"handle={acc.handle}")
+        if acc.profile_url:
+            bits.append(f"url={acc.profile_url}")
+        if acc.display_name:
+            bits.append(f"name={acc.display_name}")
+        if acc.headline:
+            bits.append(f"headline={acc.headline}")
+        if acc.snippets:
+            bits.append("snippets=" + "; ".join(acc.snippets[:3]))
+        lines.append("  • " + " | ".join(bits))
+    return "\n".join(lines)
+
+
 async def resolve_profile(
     name: str,
     email: str,
     company_domain: str | None,
-    social_handles: dict[str, str | None] | None = None,
-) -> dict:
+    social_insights: SocialEmailInsights,
+) -> tuple[dict, str]:
+    """
+    Calls Perplexity with Gmail identity + structured social-email insights.
+    Returns (parsed_json_fields, raw_response_excerpt_for_storage).
+    """
     parts = [f"Name: {name}", f"Email: {email}"]
     if company_domain:
         parts.append(f"Company domain: {company_domain}")
 
-    social_hint = ""
-    handles = social_handles or {}
-
-    if handles.get("linkedin_headline"):
-        parts.append(f"LinkedIn headline: {handles['linkedin_headline']}")
-        social_hint = (
-            "The person's own LinkedIn headline has been extracted directly from a "
-            "LinkedIn notification email sent to them — treat it as ground truth for "
-            "their current role and company. Use it to anchor your search. "
+    block = _format_social_insights_for_perplexity(social_insights)
+    social_email_block = ""
+    if block.strip():
+        social_email_block = (
+            "Structured data from their social network notification emails:\n"
+            + block
+            + "\n\n"
         )
-    if handles.get("linkedin_url"):
-        parts.append(f"LinkedIn profile: {handles['linkedin_url']}")
-        social_hint += "A LinkedIn profile URL is also available — use it as the primary source. "
-    if handles.get("instagram"):
-        parts.append(f"Instagram handle: @{handles['instagram']}")
-        if not handles.get("linkedin_headline") and not handles.get("linkedin_url"):
-            social_hint = "An Instagram handle has been provided — use it to cross-reference their public persona. "
 
     prompt = _PROFILE_PROMPT.format(
         available_info="\n".join(parts),
-        social_hint=social_hint,
+        social_email_block=social_email_block,
     )
     raw = await _call_perplexity_agent(prompt)
-    return _parse_json(raw)
+    excerpt = raw[:4000] + ("…" if len(raw) > 4000 else "")
+    return _parse_json(raw), excerpt
 
 
 # ── Social platform email pipeline ───────────────────────────────────
@@ -309,6 +341,140 @@ def extract_social_handles(emails: list[dict]) -> dict[str, str | None]:
     }
 
 
+def _sanitize_social_emails_for_llm(emails: list[dict], max_emails: int = 15) -> str:
+    """Compact JSON for the extraction agent — truncate long bodies."""
+    slim = []
+    for e in emails[:max_emails]:
+        body = (e.get("messageText") or e.get("body") or "") or ""
+        if len(body) > 8000:
+            body = body[:8000] + "…"
+        slim.append({
+            "sender": e.get("sender"),
+            "subject": e.get("subject"),
+            "preview": e.get("preview"),
+            "messageText": body,
+        })
+    return json.dumps(slim, ensure_ascii=False)
+
+
+_SOCIAL_EXTRACT_SYSTEM = """\
+You read social-network notification emails (Instagram, LinkedIn, Facebook, etc.) and extract \
+ONLY facts that are explicitly present in the text.
+
+Return ONLY valid JSON (no markdown fences) with this exact shape:
+{
+  "summary": null or a single sentence on what these emails reveal about the user,
+  "accounts": [
+    {
+      "platform": "instagram|linkedin|facebook|x|threads|other",
+      "handle": null or username without @,
+      "profile_url": null or full https URL,
+      "display_name": null or name as shown in the email,
+      "headline": null or job title / bio line from LinkedIn footer or similar,
+      "snippets": ["short useful quotes from the email, max 3 items"]
+    }
+  ],
+  "confidence": "high|medium|low",
+  "extraction_notes": null or brief caveats
+}
+
+Rules:
+- If the email is not about this user (generic promo), leave accounts empty.
+- Do not invent URLs or handles; null if unsure.
+- LinkedIn footer often says: This email was intended for Name (Headline) — use that for headline.
+"""
+
+
+def _insights_from_regex(handles: dict) -> SocialEmailInsights:
+    accounts: list[SocialPlatformAccount] = []
+    if handles.get("instagram"):
+        accounts.append(SocialPlatformAccount(
+            platform="instagram",
+            handle=handles["instagram"],
+        ))
+    if handles.get("linkedin_url") or handles.get("linkedin_headline"):
+        accounts.append(SocialPlatformAccount(
+            platform="linkedin",
+            profile_url=handles.get("linkedin_url"),
+            headline=handles.get("linkedin_headline"),
+        ))
+    return SocialEmailInsights(
+        summary=None,
+        accounts=accounts,
+        confidence="medium" if accounts else "low",
+        extraction_notes="Regex-only extraction (no LLM).",
+    )
+
+
+def merge_regex_into_insights(insights: SocialEmailInsights, handles: dict) -> SocialEmailInsights:
+    """Fill gaps from regex when the agent missed a handle or URL."""
+    accounts = [a.model_copy(deep=True) for a in insights.accounts]
+
+    def _has_ig() -> bool:
+        return any(a.platform.lower() == "instagram" and a.handle for a in accounts)
+
+    def _has_li_url() -> bool:
+        return any(a.platform.lower() == "linkedin" and a.profile_url for a in accounts)
+
+    if not _has_ig() and handles.get("instagram"):
+        accounts.append(SocialPlatformAccount(
+            platform="instagram",
+            handle=handles["instagram"],
+        ))
+    if not _has_li_url() and handles.get("linkedin_url"):
+        accounts.append(SocialPlatformAccount(
+            platform="linkedin",
+            profile_url=handles["linkedin_url"],
+            headline=handles.get("linkedin_headline"),
+        ))
+    elif handles.get("linkedin_headline"):
+        for a in accounts:
+            if a.platform.lower() == "linkedin" and not a.headline:
+                a.headline = handles["linkedin_headline"]
+                break
+
+    return insights.model_copy(update={"accounts": accounts})
+
+
+async def extract_social_email_insights(
+    name: str,
+    email: str,
+    emails: list[dict],
+) -> SocialEmailInsights:
+    """
+    LLM agent over social notification emails; falls back to regex-derived insights if needed.
+    """
+    if not emails:
+        return SocialEmailInsights()
+
+    regex_handles = extract_social_handles(emails)
+    if not _openai:
+        logging.warning("[enrichment] OPENAI_API_KEY missing — using regex-only social insights")
+        return _insights_from_regex(regex_handles)
+
+    user_block = f"User identity (from Gmail): name={name!r}, email={email!r}\n\nEmails JSON:\n"
+    payload = user_block + _sanitize_social_emails_for_llm(emails)
+
+    try:
+        resp = await _openai.chat.completions.create(
+            model=_SOCIAL_EXTRACT_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _SOCIAL_EXTRACT_SYSTEM},
+                {"role": "user", "content": payload},
+            ],
+            max_tokens=2000,
+        )
+        raw = resp.choices[0].message.content.strip()
+        data = json.loads(raw)
+        insights = SocialEmailInsights.model_validate(data)
+    except Exception as e:
+        logging.error(f"[enrichment] social email LLM extract failed: {e}", exc_info=True)
+        insights = SocialEmailInsights()
+
+    merged = merge_regex_into_insights(insights, regex_handles)
+    return merged
+
 
 # ── Personality tier classification ──────────────────────────────────
 
@@ -393,31 +559,52 @@ async def run_enrichment(entity_id: str) -> UserProfile:
     logging.info(f"[enrichment] identity: name={name!r} email={email!r} domain={company_domain!r}")
     first_name = name.split()[0].capitalize() if name else "there"
 
-    # Step 1: Find Instagram/LinkedIn notification emails → extract handles
+    # Step 1: Social notification emails → LLM agent + regex merge → structured insights
+    social_insights = SocialEmailInsights()
     try:
         social_emails = await fetch_social_platform_emails(entity_id)
-        # Log first email structure so we can verify field names
         if social_emails:
             logging.info(f"[enrichment] first social email keys: {list(social_emails[0].keys())}")
             logging.debug(f"[enrichment] first social email: {social_emails[0]}")
-        social_handles = extract_social_handles(social_emails)
-        logging.info(f"[enrichment] extracted handles: {social_handles}")
+        social_insights = await extract_social_email_insights(name, email, social_emails)
+        logging.info(f"[enrichment] social insights: {social_insights.model_dump()}")
     except Exception as e:
-        logging.error(f"[enrichment] social email fetch/extract failed: {e}", exc_info=True)
-        social_handles = {"instagram": None, "linkedin_url": None, "linkedin_headline": None}
+        logging.error(f"[enrichment] social email pipeline failed: {e}", exc_info=True)
 
-    # Step 2: Perplexity search — now enriched with social handles
-    logging.info(f"[enrichment] calling Perplexity with handles={social_handles}")
+    # Step 2: Perplexity — web profile using identity + structured social insights
+    raw_excerpt: str | None = None
+    merged: dict = {}
     try:
-        merged = await resolve_profile(name, email, company_domain, social_handles)
+        merged, raw_excerpt = await resolve_profile(
+            name, email, company_domain, social_insights
+        )
         logging.info(f"[enrichment] Perplexity result: {merged}")
     except Exception as e:
         logging.error(f"[enrichment] Perplexity failed: {e}", exc_info=True)
-        merged = {}
 
-    # Patch in the LinkedIn URL we extracted if Perplexity didn't find one
-    if not merged.get("linkedin") and social_handles.get("linkedin_url"):
-        merged["linkedin"] = social_handles["linkedin_url"]
+    # Patch LinkedIn URL from email insights if Perplexity omitted it
+    if not merged.get("linkedin"):
+        for acc in social_insights.accounts:
+            if acc.platform.lower() == "linkedin" and acc.profile_url:
+                merged["linkedin"] = acc.profile_url
+                break
+
+    perplexity_snapshot = PerplexitySnapshot(
+        model_preset=_PRESET,
+        fields={
+            "name": merged.get("name"),
+            "role": merged.get("role"),
+            "company": merged.get("company"),
+            "bio": merged.get("bio"),
+            "linkedin": merged.get("linkedin"),
+            "location": merged.get("location"),
+        },
+        raw_response_excerpt=raw_excerpt,
+    )
+    enrichment_payload = EnrichmentPayload(
+        social_email_insights=social_insights,
+        perplexity_snapshot=perplexity_snapshot,
+    )
 
     tier = classify_tier(merged.get("role"), merged.get("company"), merged.get("bio"))
     brief = build_personality_brief(merged, tier)
@@ -433,4 +620,5 @@ async def run_enrichment(entity_id: str) -> UserProfile:
         location=merged.get("location"),
         personality_tier=tier,
         personality_brief=brief,
+        enrichment=enrichment_payload,
     )

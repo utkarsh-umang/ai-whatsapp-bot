@@ -12,6 +12,51 @@ PersonalityTier = Literal[
 ]
 
 
+# ── Enrichment payloads (stored under UserProfile.enrichment) ─────────
+# Versioned JSON so Mongo can evolve without breaking readers.
+
+EnrichmentSchemaVersion = Literal[1]
+
+
+class SocialPlatformAccount(BaseModel):
+    """One surfaced account or signal from a social notification email."""
+
+    platform: str  # instagram | linkedin | facebook | x | threads | other
+    handle: Optional[str] = None
+    profile_url: Optional[str] = None
+    display_name: Optional[str] = None
+    headline: Optional[str] = None
+    snippets: list[str] = Field(default_factory=list)
+
+
+class SocialEmailInsights(BaseModel):
+    """Structured output from the social-email extraction agent."""
+
+    summary: Optional[str] = None
+    accounts: list[SocialPlatformAccount] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "low"
+    extraction_notes: Optional[str] = None
+
+
+class PerplexitySnapshot(BaseModel):
+    """What we asked Perplexity for and what it returned (for audit / debugging)."""
+
+    model_preset: str = "pro-search"
+    fields: dict[str, Optional[str]] = Field(default_factory=dict)
+    raw_response_excerpt: Optional[str] = None
+
+
+class EnrichmentPayload(BaseModel):
+    """
+    Full enrichment record stored in MongoDB alongside flat UserProfile fields.
+    """
+
+    schema_version: EnrichmentSchemaVersion = 1
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    social_email_insights: SocialEmailInsights
+    perplexity_snapshot: Optional[PerplexitySnapshot] = None
+
+
 class UserProfile(BaseModel):
     name: str
     email: str
@@ -25,6 +70,9 @@ class UserProfile(BaseModel):
 
     # The pre-built brief that gets injected into every system prompt
     personality_brief: Optional[str] = None
+
+    # Rich structured enrichment (social agent + Perplexity); stored in MongoDB as JSON
+    enrichment: Optional[EnrichmentPayload] = None
 
 
 class User(BaseModel):
