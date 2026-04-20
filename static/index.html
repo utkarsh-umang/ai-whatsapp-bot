@@ -43,16 +43,29 @@
       background-size: 40px 40px;
     }
 
+    body { overflow: hidden; }
     .page {
       position: relative; z-index: 1;
-      min-height: 100vh; display: flex; flex-direction: column;
-      align-items: center; padding: 40px 20px 60px;
+      height: 100svh; display: flex; flex-direction: column;
+      align-items: center; padding: 40px 20px 28px;
     }
 
     header {
       width: 100%; max-width: 440px;
       display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: 52px;
+      margin-bottom: 28px;
+    }
+    .header-actions {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .btn-logout {
+      background: transparent; border: none;
+      padding: 6px 10px; border-radius: 8px;
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      color: var(--text-2); cursor: pointer;
+    }
+    .btn-logout:hover {
+      color: var(--text); background: rgba(1,84,98,0.06);
     }
     .logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -1px; }
     .logo span { color: var(--accent-2); }
@@ -62,39 +75,14 @@
       padding: 4px 10px; border-radius: 100px; letter-spacing: 0.5px;
     }
 
-    /* steps */
-    .steps {
-      display: flex; align-items: flex-start; gap: 0;
-      width: 100%; max-width: 440px; margin-bottom: 40px;
-    }
-    .step-node { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; }
-    .step-node:not(:last-child)::after {
-      content: '';
-      position: absolute; top: 14px; left: calc(50% + 18px); right: calc(-50% + 18px);
-      height: 1px; background: var(--border); transition: background 0.4s;
-    }
-    .step-node.done:not(:last-child)::after { background: rgba(34,197,94,0.3); }
-
-    .node-circle {
-      width: 28px; height: 28px; border-radius: 50%;
-      border: 1px solid var(--border); background: var(--surface);
-      display: flex; align-items: center; justify-content: center;
-      font-family: 'JetBrains Mono', monospace; font-size: 11px;
-      color: var(--text-3); transition: all 0.3s;
-    }
-    .step-node.active .node-circle { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 14px rgba(238,90,54,0.12); }
-    .step-node.done .node-circle { border-color: var(--green); background: rgba(34,197,94,0.08); color: var(--green); }
-
-    .node-label { font-size: 11px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; transition: color 0.3s; white-space: nowrap; }
-    .step-node.active .node-label { color: var(--text-2); }
-    .step-node.done .node-label { color: rgba(34,197,94,0.5); }
-
     /* card */
     .card {
       width: 100%; max-width: 440px;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 18px; padding: 36px;
       position: relative; overflow: hidden;
+      flex: 1; display: flex; flex-direction: column;
+      min-height: 0;
     }
     .card::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
@@ -103,10 +91,11 @@
 
     /* panels */
     .panel { display: none; }
-    .panel.on { display: block; animation: up 0.3s ease; }
+    .panel.on { display: flex; flex-direction: column; flex: 1; min-height: 0; animation: up 0.3s ease; }
+    /* Connect Google: center block vertically in the card */
+    #p1.panel.on { justify-content: center; text-align: center; }
     @keyframes up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 14px; }
     .title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 24px; line-height: 1.2; letter-spacing: -0.3px; margin-bottom: 10px; }
     .desc { font-size: 14px; color: var(--text-2); line-height: 1.65; margin-bottom: 28px; }
     .desc strong { color: var(--text); font-weight: 500; }
@@ -130,7 +119,7 @@
     /* chat panel */
     .chat-wrap {
       display: flex; flex-direction: column;
-      min-height: 320px; max-height: min(52vh, 420px);
+      flex: 1; min-height: 0;
       background: var(--surface-2); border: 1px solid var(--border);
       border-radius: 12px; overflow: hidden; margin-bottom: 14px;
     }
@@ -142,6 +131,62 @@
     .msg.user { align-self: flex-end; background: rgba(1,84,98,0.10); color: var(--teal); border: 1px solid rgba(1,84,98,0.14); border-bottom-right-radius: 4px; }
     .msg.assistant { align-self: flex-start; background: rgba(238,90,54,0.08); color: var(--teal); border: 1px solid rgba(238,90,54,0.18); border-left: 3px solid var(--accent); border-bottom-left-radius: 4px; }
     .msg.typing { color: var(--text-3); font-style: italic; font-size: 13px; }
+
+    /* enrichment: “hold up… cooking…” */
+    .enrich-cooking {
+      align-self: center;
+      margin: auto 12px;
+      padding: 18px 22px;
+      border-radius: 14px;
+      border: 1px dashed rgba(238,90,54,0.35);
+      background: rgba(238,90,54,0.07);
+      max-width: 92%;
+      text-align: center;
+      animation: enrichPop 0.45s ease;
+    }
+    @keyframes enrichPop {
+      from { opacity: 0; transform: scale(0.96) translateY(6px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .enrich-cooking .enrich-muted {
+      font-size: 13px;
+      color: var(--text-2);
+      margin-bottom: 6px;
+      letter-spacing: 0.02em;
+    }
+    .enrich-cooking .enrich-hot {
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 17px;
+      color: var(--accent);
+      letter-spacing: -0.03em;
+      animation: enrichPulse 2.2s ease-in-out infinite;
+    }
+    .enrich-cooking .enrich-dots {
+      display: inline-block;
+      margin-left: 1px;
+    }
+    .enrich-cooking .enrich-dots i {
+      font-style: normal;
+      animation: enrichDot 1.05s ease-in-out infinite;
+    }
+    .enrich-cooking .enrich-dots i:nth-child(1) { animation-delay: 0s; }
+    .enrich-cooking .enrich-dots i:nth-child(2) { animation-delay: 0.18s; }
+    .enrich-cooking .enrich-dots i:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes enrichPulse {
+      0%, 100% { opacity: 1; filter: brightness(1); }
+      50% { opacity: 0.88; filter: brightness(1.06); }
+    }
+    @keyframes enrichDot {
+      0%, 70%, 100% { opacity: 0.2; transform: translateY(0); }
+      35% { opacity: 1; transform: translateY(-1px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .enrich-cooking { animation: none; }
+      .enrich-cooking .enrich-hot { animation: none; }
+      .enrich-cooking .enrich-dots i { animation: none; opacity: 1; }
+    }
+
     .chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); }
     .chat-in {
       flex: 1; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border);
@@ -156,11 +201,6 @@
     .btn-send:hover { background: #f06a4a; }
     .btn-send:disabled { background: var(--surface-2); color: var(--text-3); cursor: not-allowed; }
 
-    /* next steps box */
-    .next { margin-top: 18px; padding: 15px; background: var(--surface-2); border-radius: 9px; border: 1px solid var(--border); }
-    .next-label { font-size: 10px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; margin-bottom: 6px; letter-spacing: 0.5px; }
-    .next p { font-size: 13px; color: var(--text-2); line-height: 1.65; }
-
     /* spinner */
     .spin { width: 14px; height: 14px; border: 2px solid rgba(1,84,98,0.22); border-top-color: var(--teal); border-radius: 50%; animation: s 0.6s linear infinite; display: none; }
     @keyframes s { to { transform: rotate(360deg); } }
@@ -168,8 +208,6 @@
     /* error */
     .err { font-size: 12px; color: var(--red); font-family: 'JetBrains Mono', monospace; margin-top: 9px; display: none; }
 
-    footer { margin-top: 28px; font-size: 11px; color: var(--text-3); text-align: center; font-family: 'JetBrains Mono', monospace; line-height: 1.8; }
-    footer a { color: var(--text-2); text-decoration: none; }
   </style>
 </head>
 <body>
@@ -177,39 +215,19 @@
 
   <header>
     <div class="logo">faff<span>.</span></div>
-    <div class="pill">EARLY ACCESS</div>
+    <div class="header-actions">
+      <button type="button" class="btn-logout" id="btn-logout" onclick="logout()" hidden>Log out</button>
+      <div class="pill">EARLY ACCESS</div>
+    </div>
   </header>
-
-  <div class="steps" id="steps">
-    <div class="step-node active" id="sn1">
-      <div class="node-circle" id="nc1">01</div>
-      <div class="node-label">google</div>
-    </div>
-    <div class="step-node" id="sn2">
-      <div class="node-circle" id="nc2">02</div>
-      <div class="node-label">say hi</div>
-    </div>
-    <div class="step-node" id="sn3">
-      <div class="node-circle" id="nc3">03</div>
-      <div class="node-label">chat</div>
-    </div>
-  </div>
 
   <div class="card">
 
     <!-- Step 1 -->
     <div class="panel on" id="p1">
-      <div class="eyebrow">Step 01 — 03</div>
       <div class="title">Connect your Google account</div>
       <div class="desc">
-        faff reads your Gmail to figure out who you are —
-        no forms, no questionnaire.
-        One tap and it knows.
-      </div>
-      <div class="pills">
-        <div class="cpill"><b></b>knows your role</div>
-        <div class="cpill"><b></b>reads the room</div>
-        <div class="cpill"><b></b>no questions asked</div>
+        Connect Google once, then jump straight into chat.
       </div>
       <button class="btn btn-main" id="btn1" onclick="startAuth()">
         <svg width="17" height="17" viewBox="0 0 18 18" fill="none">
@@ -226,29 +244,6 @@
 
     <!-- Step 2 -->
     <div class="panel" id="p2">
-      <div class="eyebrow">Step 02 — 03</div>
-      <div class="title">You&apos;re in</div>
-      <div class="desc">
-        Google is connected. Tap below and we&apos;ll open chat — your first message is just a hi.
-      </div>
-      <div class="pills">
-        <div class="cpill"><b></b>profile ready</div>
-        <div class="cpill"><b></b>no extra forms</div>
-        <div class="cpill"><b></b>chat here</div>
-      </div>
-      <button class="btn btn-main" id="btn2" onclick="openChatStep()">
-        <span id="btn2-label">Send us a hi</span>
-        <div class="spin" id="spin2"></div>
-      </button>
-      <div class="err" id="err2">Something went wrong. Try again.</div>
-    </div>
-
-    <!-- Step 3 -->
-    <div class="panel" id="p3">
-      <div class="eyebrow">Step 03 — 03</div>
-      <div class="title">faff</div>
-      <div class="desc">Same personality as on WhatsApp — right in your browser.</div>
-
       <div class="chat-wrap">
         <div class="chat-msgs" id="chat-msgs"></div>
         <div class="chat-input-row">
@@ -258,19 +253,9 @@
         </div>
       </div>
       <div class="err" id="err3">Couldn&apos;t send. Try again.</div>
-
-      <div class="next">
-        <div class="next-label">TIP</div>
-        <p>faff already inferred context from Gmail. ask anything.</p>
-      </div>
     </div>
 
   </div><!-- .card -->
-
-  <footer>
-    read-only access · your data never leaves your account<br>
-    <a href="#">privacy</a> &nbsp;·&nbsp; <a href="#">terms</a>
-  </footer>
 
 </div>
 
@@ -287,14 +272,34 @@
   if (urlEntity) { entityId = urlEntity; localStorage.setItem('eid', entityId); }
 
   if (urlStep === 2) { go(2); history.replaceState({}, '', '/'); }
-  else if (urlStep === 3) { go(3); history.replaceState({}, '', '/'); }
+
+  /** Post–Google-auth states where chat should load (same entity_id as localStorage). */
+  function statusOpensChat(status) {
+    return status === 'enriching' || status === 'pending_first_message' || status === 'active';
+  }
 
   // ── step 1 ────────────────────────────────────────────────────────
-  async function startAuth() {
-    // New OAuth attempt = new Composio entity + new Mongo user. Reusing localStorage
-    // eid would upsert the same document, so a second Google account would overwrite the first.
+  function logout() {
+    localStorage.removeItem('eid');
     entityId = crypto.randomUUID();
     localStorage.setItem('eid', entityId);
+    chatBootstrapped = false;
+    const box = document.getElementById('chat-msgs');
+    if (box) box.innerHTML = '';
+    const typing = document.getElementById('chat-typing');
+    if (typing) typing.remove();
+    const input = document.getElementById('chat-in');
+    if (input) input.value = '';
+    hide('err3');
+    go(1);
+  }
+
+  async function startAuth() {
+    const { status } = await fetchStatus();
+    if (statusOpensChat(status)) {
+      go(2);
+      return;
+    }
 
     const btn = document.getElementById('btn1');
     const label = document.getElementById('btn1-label');
@@ -317,10 +322,15 @@
     }
   }
 
-  // ── step 2 → 3 ────────────────────────────────────────────────────
-  function openChatStep() {
-    hide('err2');
-    go(3);
+  // ── status ─────────────────────────────────────────────────────────
+  async function fetchStatus() {
+    try {
+      const r = await fetch(`/api/status/${entityId}`);
+      if (!r.ok) return { status: 'unknown' };
+      return await r.json();
+    } catch {
+      return { status: 'unknown' };
+    }
   }
 
   // ── chat ───────────────────────────────────────────────────────────
@@ -331,6 +341,26 @@
     el.textContent = text;
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
+  }
+
+  function showEnrichCooking() {
+    const box = document.getElementById('chat-msgs');
+    if (document.getElementById('enrich-cooking')) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'enrich-cooking';
+    wrap.className = 'enrich-cooking';
+    wrap.setAttribute('role', 'status');
+    wrap.setAttribute('aria-live', 'polite');
+    wrap.innerHTML =
+      '<div class="enrich-muted">hold up…</div>' +
+      '<div class="enrich-hot">cooking<span class="enrich-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span></div>';
+    box.appendChild(wrap);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function hideEnrichCooking() {
+    const el = document.getElementById('enrich-cooking');
+    if (el) el.remove();
   }
 
   function setTyping(on) {
@@ -371,56 +401,20 @@
     }
   }
 
-  async function bootstrapChat() {
-    if (chatBootstrapped) return;
-    chatBootstrapped = true;
+  async function sendChatMessage(text) {
+    const t = String(text || '').trim();
+    if (!t) return;
+    hideEnrichCooking();
+    hide('err3');
     const input = document.getElementById('chat-in');
     const sendBtn = document.getElementById('btn-send');
-    input.disabled = true;
-    sendBtn.disabled = true;
-    hide('err3');
-
-    try {
-      const hr = await fetch(`/api/chat/history/${entityId}`);
-      if (!hr.ok) throw new Error();
-      const { messages } = await hr.json();
-
-      const box = document.getElementById('chat-msgs');
-      box.innerHTML = '';
-
-      if (messages && messages.length) {
-        messages.forEach(m => appendMsg(m.role, m.content));
-      } else {
-        appendMsg('user', 'Hi');
-        setTyping(true);
-        const replies = await postChat('Hi');
-        setTyping(false);
-        await appendAssistantReplies(replies);
-      }
-    } catch {
-      chatBootstrapped = false;
-      show('err3');
-    } finally {
-      input.disabled = false;
-      sendBtn.disabled = false;
-      input.focus();
-    }
-  }
-
-  async function sendChat() {
-    const input = document.getElementById('chat-in');
-    const text = (input.value || '').trim();
-    if (!text) return;
-    hide('err3');
     input.value = '';
-    appendMsg('user', text);
-
-    const sendBtn = document.getElementById('btn-send');
+    appendMsg('user', t);
     input.disabled = true;
     sendBtn.disabled = true;
     setTyping(true);
     try {
-      const replies = await postChat(text);
+      const replies = await postChat(t);
       setTyping(false);
       await appendAssistantReplies(replies);
     } catch {
@@ -433,22 +427,98 @@
     }
   }
 
+  async function bootstrapChat() {
+    if (chatBootstrapped) return;
+    chatBootstrapped = true;
+    const input = document.getElementById('chat-in');
+    const sendBtn = document.getElementById('btn-send');
+    input.disabled = true;
+    sendBtn.disabled = true;
+    hide('err3');
+
+    let hadHistory = false;
+    try {
+      const hr = await fetch(`/api/chat/history/${entityId}`);
+      if (!hr.ok) throw new Error();
+      const { messages } = await hr.json();
+
+      const box = document.getElementById('chat-msgs');
+      box.innerHTML = '';
+
+      if (messages && messages.length) {
+        hadHistory = true;
+        messages.forEach(m => appendMsg(m.role, m.content));
+      }
+    } catch {
+      chatBootstrapped = false;
+      show('err3');
+      hideEnrichCooking();
+      input.disabled = false;
+      sendBtn.disabled = false;
+      return;
+    }
+
+    if (!hadHistory) showEnrichCooking();
+
+    await gateChatUntilReady();
+
+    if (!hadHistory) {
+      await sendChatMessage('Hi there');
+    } else {
+      input.focus();
+    }
+  }
+
+  async function gateChatUntilReady() {
+    const input = document.getElementById('chat-in');
+    const sendBtn = document.getElementById('btn-send');
+
+    input.disabled = true;
+    sendBtn.disabled = true;
+
+    for (let i = 0; i < 120; i++) { // ~2 minutes max
+      const { status } = await fetchStatus();
+      if (status && status !== 'enriching' && status !== 'pending_auth') {
+        hideEnrichCooking();
+        input.disabled = false;
+        sendBtn.disabled = false;
+        return;
+      }
+      showEnrichCooking();
+      await sleep(1000);
+    }
+
+    hideEnrichCooking();
+    input.disabled = false;
+    sendBtn.disabled = false;
+  }
+
+  async function sendChat() {
+    const input = document.getElementById('chat-in');
+    const text = (input.value || '').trim();
+    if (!text) return;
+    await sendChatMessage(text);
+  }
+
   // ── transitions ────────────────────────────────────────────────────
   function go(n) {
-    [1, 2, 3].forEach(i => {
+    [1, 2].forEach(i => {
       document.getElementById(`p${i}`).classList.toggle('on', i === n);
-      const sn = document.getElementById(`sn${i}`);
-      const nc = document.getElementById(`nc${i}`);
-      sn.className = 'step-node' + (i < n ? ' done' : i === n ? ' active' : '');
-      nc.innerHTML = i < n
-        ? `<svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 5.5l3 3 5-5" stroke="#22c55e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`
-        : `0${i}`;
     });
-    if (n === 3) bootstrapChat();
+    const btnLogout = document.getElementById('btn-logout');
+    if (btnLogout) btnLogout.hidden = n !== 2;
+    if (n === 2) bootstrapChat();
   }
 
   function show(id) { document.getElementById(id).style.display = 'block'; }
   function hide(id) { document.getElementById(id).style.display = 'none'; }
+
+  // ── Cold load / refresh: jump to chat if this browser already has an onboarded session ──
+  (async function resumeSessionIfNeeded() {
+    if (urlStep === 2) return;
+    const { status } = await fetchStatus();
+    if (statusOpensChat(status)) go(2);
+  })();
 </script>
 </body>
 </html>

@@ -67,8 +67,8 @@ async def composio_start(entity_id: str = None):
 
 @app.get("/auth/composio/callback")
 async def composio_callback(entity_id: str, background_tasks: BackgroundTasks):
-    """Gmail OAuth is done. Fire enrichment in background; user continues to hi + chat."""
-    await db.set_status(entity_id, "pending_first_message")
+    """Gmail OAuth is done. Fire enrichment in background; user goes straight to chat."""
+    await db.set_status(entity_id, "enriching")
 
     # Start enrichment immediately — usually ready before they open chat
     background_tasks.add_task(_run_enrichment_task, entity_id)
@@ -89,6 +89,12 @@ async def _run_enrichment_task(entity_id: str):
     except Exception as e:
         # Store a minimal profile so the bot still works
         logging.error(f"Enrichment failed for {entity_id}: {e}", exc_info=True)
+    finally:
+        # Unblock chat, but don't override a newer state (e.g. user already became active).
+        user = await db.get_user_by_entity(entity_id)
+        if user and user.get("status") == "enriching":
+            # First message may still fall back gracefully if profile is missing.
+            await db.set_status(entity_id, "pending_first_message")
 
 
 # ── Phone setup ───────────────────────────────────────────────────────
@@ -144,6 +150,9 @@ async def api_chat(body: ChatSendRequest):
     status = user.get("status")
     if status == "pending_auth":
         raise HTTPException(400, "Complete Google sign-in first.")
+
+    if status == "enriching":
+        raise HTTPException(409, "Enrichment in progress. Try again shortly.")
 
     if status == "pending_first_message":
         replies = await _first_message_web(user, text)

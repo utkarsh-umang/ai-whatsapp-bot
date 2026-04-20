@@ -82,26 +82,34 @@ async def append_message_for_user(user: dict, role: str, content: str):
     await get_db().conversations.insert_one(doc)
 
 
+def _history_sort_key(doc: dict):
+    """Stable order: time first, then ObjectId when `ts` ties within the same second."""
+    ts = doc.get("ts")
+    return (ts or datetime.min, doc.get("_id"))
+
+
 async def get_history(phone: str) -> list[dict]:
     """Returns last MAX_HISTORY_TURNS messages, oldest first (phone-keyed)."""
     cursor = (
         get_db().conversations
-        .find({"phone": phone}, {"_id": 0, "role": 1, "content": 1})
-        .sort("ts", -1)
+        .find({"phone": phone}, {"role": 1, "content": 1, "ts": 1, "_id": 1})
+        .sort([("ts", -1), ("_id", -1)])
         .limit(MAX_HISTORY_TURNS)
     )
     docs = await cursor.to_list(length=MAX_HISTORY_TURNS)
-    return list(reversed(docs))
+    docs.sort(key=_history_sort_key)
+    return [{"role": d["role"], "content": d["content"]} for d in docs]
 
 
 async def get_history_for_user(user: dict) -> list[dict]:
-    """Last N messages for this user (WhatsApp or web)."""
+    """Last N messages for this user (WhatsApp or web), oldest first."""
     q = _conversation_query(user)
     cursor = (
         get_db().conversations
-        .find(q, {"_id": 0, "role": 1, "content": 1})
-        .sort("ts", -1)
+        .find(q, {"role": 1, "content": 1, "ts": 1, "_id": 1})
+        .sort([("ts", -1), ("_id", -1)])
         .limit(MAX_HISTORY_TURNS)
     )
     docs = await cursor.to_list(length=MAX_HISTORY_TURNS)
-    return list(reversed(docs))
+    docs.sort(key=_history_sort_key)
+    return [{"role": d["role"], "content": d["content"]} for d in docs]
