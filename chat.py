@@ -31,6 +31,8 @@ Rules:
 - Each message must be ONE line, ideally ONE sentence.
 - Default to 1-3 messages.
 - If the user asked a question, message[0] must answer it directly.
+- The LAST message must always be a single short follow-up question. Ground it in what faff can actually do (see the product context in the other system message). Tie it to the thread when you can — e.g. travel pain → web check-in or refund chase; busy week → bills or a reminder; social → gifts or planning a night out.
+- Do not use generic closers like "How can I help?" or "Anything else?" — the question must be specific and on-brand for faff's real scope. Never promise out-of-scope work (hiring, decks, LinkedIn, market research).
 - No bullet points. No numbered lists. No long paragraphs.
 """
 
@@ -76,9 +78,18 @@ Hard rules (privacy + honesty):
 - Don't quote the persona description back at them.
 """
 
+# Grounded in usefaff.com — what the product is, what it is not (for accurate follow-ups).
+_FAFF_PRODUCT_CONTEXT = """\
+What faff actually is (stay truthful; do not invent features):
+- A personal assistant for life outside work — errands, logistics, and admin; people mostly use faff on WhatsApp.
+- Live in Bangalore and Mumbai; access is invite/referral-led in practice.
+- In scope (examples): home (groceries, utilities, home services); coordination (appointments, courier, porter, deliveries); commerce (recommendations, returns, refunds); travel (flights, hotels, web check-in, airport cab); social (gifting, birthdays, hosting, date planning); personal admin (bills, reminders, wake-up calls, document help); health (medicines, doctor appointments, checkups); lifestyle (restaurants, concerts, things to do).
+- Out of scope: business or work tasks — hiring, presentations, hunting LinkedIn profiles, market research, and similar. Never promise or hand-wave those.
+"""
+
 
 def _build_system(persona_description: str | None, facts_sheet: str | None = None) -> str:
-    base = _BASE_SYSTEM
+    base = _BASE_SYSTEM + "\n\n" + _FAFF_PRODUCT_CONTEXT + "\n"
     if persona_description:
         base += (
             "\nWho you're talking to (identity + tone — grounded from their Gmail + public web):\n"
@@ -109,7 +120,7 @@ Identity + tone:
 - Specific beats generic: "saw you're building agentic stuff at WordsWorth" beats "saw you work in AI"; "hope Goa was worth the 4 AM flight" beats "hope your last trip was fun".
 - Only ONE concrete callback. Do not stack multiple facts.
 - Keep it SHORT. 3-4 short lines max. Chat, not email.
-- End with one casual line about what faff does — invite them to just talk.
+- End with a casual line about what faff does (life admin and errands on WhatsApp — not corporate work), then ONE short follow-up question grounded in something faff can actually take off their plate (travel logistics, returns, reminders, bookings, etc. — never hiring, decks, or market research).
 - Do NOT use bullet points. Do NOT say "I've connected your accounts." Do NOT mention banks, money, cards, or finance alerts. Do NOT quote the persona back at them.
 - If the facts sheet is empty or the persona has "Unknowns", stay warm and generic — never bluff.
 
@@ -135,7 +146,13 @@ async def craft_first_message(
         max_tokens=300,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": _MULTI_MESSAGE_SYSTEM + "\nDefault to 2-4 messages for the very first hello."},
+            {
+                "role": "system",
+                "content": _FAFF_PRODUCT_CONTEXT
+                + "\n\n"
+                + _MULTI_MESSAGE_SYSTEM
+                + "\nDefault to 2-4 messages for the very first hello. The last bubble must still be a grounded follow-up question per the rules above.",
+            },
             {"role": "user", "content": prompt},
         ],
     )
