@@ -10,6 +10,7 @@ Personality adjusts per tier. Memory is injected as conversation history.
 """
 
 import os
+import json
 from openai import AsyncOpenAI
 from models import PersonalityTier
 import db
@@ -20,6 +21,37 @@ _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MODEL_FIRST  = "gpt-4o"       # better creative writing for the wow moment
 MODEL_CHAT   = "gpt-4o-mini"  # fast + cheap for ongoing replies
+
+_MULTI_MESSAGE_SYSTEM = """\
+Output format:
+- Return ONLY valid JSON (no markdown fences, no prose).
+- Shape: {"messages": ["...","..."]} where each item is one WhatsApp-style line.
+
+Rules:
+- Each message must be ONE line, ideally ONE sentence.
+- Default to 1-3 messages.
+- If the user asked a question, message[0] must answer it directly.
+- No bullet points. No numbered lists. No long paragraphs.
+"""
+
+
+def _normalize_lines(raw_lines: list[Any] | None, *, max_lines: int = 3) -> list[str]:
+    if not raw_lines:
+        return []
+    out: list[str] = []
+    for item in raw_lines:
+        if not isinstance(item, str):
+            continue
+        s = item.replace("\r", "").strip()
+        if not s:
+            continue
+        # Force single-line bubbles.
+        s = " ".join(s.splitlines()).strip()
+        if s:
+            out.append(s)
+        if len(out) >= max_lines:
+            break
+    return out
 
 
 # ── Personality system prompts per tier ──────────────────────────────
@@ -136,7 +168,7 @@ async def craft_first_message(
     first_name: str,
     personality_brief: str,
     tier: PersonalityTier,
-) -> str:
+) -> list[str]:
     prompt = _FIRST_MESSAGE_PROMPT.format(
         first_name=first_name,
         personality_brief=personality_brief,
@@ -145,9 +177,23 @@ async def craft_first_message(
     resp = await _client.chat.completions.create(
         model=MODEL_FIRST,
         max_tokens=300,
-        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _MULTI_MESSAGE_SYSTEM + "\nDefault to 2-4 messages for the very first hello."},
+            {"role": "user", "content": prompt},
+        ],
     )
-    return resp.choices[0].message.content.strip()
+    raw = (resp.choices[0].message.content or "").strip()
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+
+    lines = _normalize_lines((data or {}).get("messages"), max_lines=4)
+    if not lines:
+        # Fallback: treat raw as plain text and split.
+        lines = _normalize_lines(raw.split("\n"), max_lines=4)
+    return lines
 
 
 # ── Ongoing replies ───────────────────────────────────────────────────
@@ -158,23 +204,36 @@ async def reply(
     personality_brief: str | None,
     *,
     user: dict[str, Any],
-) -> str:
+) -> list[str]:
     """Load conversation history, call GPT, save both turns, return response."""
     history = await db.get_history_for_user(user)
 
-    messages = [{"role": "system", "content": _build_system(tier, personality_brief)}]
+    messages = [
+        {"role": "system", "content": _build_system(tier, personality_brief)},
+        {"role": "system", "content": _MULTI_MESSAGE_SYSTEM},
+    ]
     for turn in history:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_message})
 
     resp = await _client.chat.completions.create(
         model=MODEL_CHAT,
+        response_format={"type": "json_object"},
         max_tokens=500,
         messages=messages,
     )
-    response_text = resp.choices[0].message.content.strip()
+    raw = (resp.choices[0].message.content or "").strip()
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    lines = _normalize_lines((data or {}).get("messages"), max_lines=3)
+    if not lines:
+        # Fallback: treat raw as a single reply, but still keep it one-line.
+        lines = _normalize_lines([raw], max_lines=1) or ["something broke on my end, try again?"]
 
     await db.append_message_for_user(user, "user", user_message)
-    await db.append_message_for_user(user, "assistant", response_text)
+    for line in lines:
+        await db.append_message_for_user(user, "assistant", line)
 
-    return response_text
+    return lines

@@ -358,7 +358,17 @@
     });
     if (!r.ok) throw new Error();
     const d = await r.json();
-    return d.reply;
+    return Array.isArray(d.replies) ? d.replies : [String(d.reply || '')].filter(Boolean);
+  }
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function appendAssistantReplies(replies) {
+    const lines = (replies || []).map(x => String(x || '').trim()).filter(Boolean);
+    for (let i = 0; i < lines.length; i++) {
+      appendMsg('assistant', lines[i]);
+      if (i !== lines.length - 1) await sleep(260);
+    }
   }
 
   async function bootstrapChat() {
@@ -383,9 +393,9 @@
       } else {
         appendMsg('user', 'Hi');
         setTyping(true);
-        const reply = await postChat('Hi');
+        const replies = await postChat('Hi');
         setTyping(false);
-        appendMsg('assistant', reply);
+        await appendAssistantReplies(replies);
       }
     } catch {
       chatBootstrapped = false;
@@ -410,9 +420,9 @@
     sendBtn.disabled = true;
     setTyping(true);
     try {
-      const reply = await postChat(text);
+      const replies = await postChat(text);
       setTyping(false);
-      appendMsg('assistant', reply);
+      await appendAssistantReplies(replies);
     } catch {
       setTyping(false);
       show('err3');

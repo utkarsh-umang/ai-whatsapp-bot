@@ -108,7 +108,7 @@ class ChatSendRequest(BaseModel):
 
 
 class ChatSendResponse(BaseModel):
-    reply: str
+    replies: list[str]
 
 
 # ── Periskope webhook ─────────────────────────────────────────────────

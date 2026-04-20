@@ -146,15 +146,15 @@ async def api_chat(body: ChatSendRequest):
         raise HTTPException(400, "Complete Google sign-in first.")
 
     if status == "pending_first_message":
-        reply_text = await _first_message_web(user, text)
-        return ChatSendResponse(reply=reply_text)
+        replies = await _first_message_web(user, text)
+        return ChatSendResponse(replies=replies)
 
     if status == "active":
         profile = user.get("profile") or {}
         tier = profile.get("personality_tier") or "unknown"
         brief = profile.get("personality_brief")
-        reply_text = await reply(text, tier, brief, user=user)
-        return ChatSendResponse(reply=reply_text)
+        replies = await reply(text, tier, brief, user=user)
+        return ChatSendResponse(replies=replies)
 
     raise HTTPException(400, "Cannot chat in this state.")
 
@@ -215,15 +215,19 @@ async def _send_first_message(user: dict, phone: str):
 
     if personality_brief:
         # Full wow moment — we know who they are
-        message = await craft_first_message(first_name, personality_brief, tier)
+        replies = await craft_first_message(first_name, personality_brief, tier)
     else:
         # Enrichment failed or is still running — graceful fallback
-        message = f"hey {first_name} 👋 you're in. just talk to me."
+        replies = [f"hey {first_name} 👋 you're in. just talk to me."]
 
-    await periskope.send(phone, message)
+    for i, line in enumerate(replies):
+        await periskope.send(phone, line)
+        if i != len(replies) - 1:
+            await asyncio.sleep(0.35)
 
     # Save to history so future turns have context of the first message
-    await db.append_message_for_user(user, "assistant", message)
+    for line in replies:
+        await db.append_message_for_user(user, "assistant", line)
 
 
 async def _chat(user: dict, message: str):
@@ -235,24 +239,28 @@ async def _chat(user: dict, message: str):
         return
 
     try:
-        response = await reply(message, tier, brief, user=user)
-        await periskope.send(phone, response)
+        replies = await reply(message, tier, brief, user=user)
+        for i, line in enumerate(replies):
+            await periskope.send(phone, line)
+            if i != len(replies) - 1:
+                await asyncio.sleep(0.35)
     except Exception:
         await periskope.send(phone, "something broke on my end, try again?")
 
 
-async def _first_message_web(user: dict, user_text: str) -> str:
+async def _first_message_web(user: dict, user_text: str) -> list[str]:
     profile = user.get("profile") or {}
     first_name = profile.get("first_name") or user.get("name", "").split()[0] or "hey"
     personality_brief = profile.get("personality_brief") or ""
     tier = profile.get("personality_tier") or "unknown"
 
     if personality_brief:
-        message = await craft_first_message(first_name, personality_brief, tier)
+        replies = await craft_first_message(first_name, personality_brief, tier)
     else:
-        message = f"hey {first_name} 👋 you're in. just talk to me."
+        replies = [f"hey {first_name} 👋 you're in. just talk to me."]
 
     await db.append_message_for_user(user, "user", user_text)
-    await db.append_message_for_user(user, "assistant", message)
+    for line in replies:
+        await db.append_message_for_user(user, "assistant", line)
     await db.set_status(user["entity_id"], "active")
-    return message
+    return replies
