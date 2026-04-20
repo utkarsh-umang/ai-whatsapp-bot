@@ -3,17 +3,13 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from composio import Composio
 
 import db
-import periskope
 from models import (
-    SetupPhoneRequest,
-    SetupPhoneResponse,
-    PeriskopeWebhook,
     ChatSendRequest,
     ChatSendResponse,
 )
@@ -24,8 +20,6 @@ COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 # Create this in Composio dashboard → Auth Configs → Gmail → copy the config ID
 COMPOSIO_GMAIL_AUTH_CONFIG_ID = os.getenv("COMPOSIO_GMAIL_AUTH_CONFIG_ID")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
-# This is the bot's phone number used for the "Click to Chat" link
-BOT_PHONE = os.getenv("PERISKOPE_PHONE", "919XXXXXXXXX")
 
 
 @asynccontextmanager
@@ -97,29 +91,6 @@ async def _run_enrichment_task(entity_id: str):
             await db.set_status(entity_id, "pending_first_message")
 
 
-# ── Phone setup ───────────────────────────────────────────────────────
-
-@app.post("/setup/phone", response_model=SetupPhoneResponse)
-async def setup_phone(body: SetupPhoneRequest):
-    user = await db.get_user_by_entity(body.entity_id)
-    if not user:
-        raise HTTPException(404, "Complete Google auth first.")
-
-    phone = body.phone.replace(" ", "").replace("-", "").lstrip("+")
-    if not phone.isdigit() or len(phone) < 10:
-        raise HTTPException(422, "Invalid phone number.")
-
-    if len(phone) == 10:
-        phone = "91" + phone
-
-    await db.upsert_user(body.entity_id, {
-        "phone": phone,
-        "status": "pending_first_message",
-    })
-
-    return SetupPhoneResponse(wa_link=f"https://wa.me/{BOT_PHONE}?text=Hi")
-
-
 # ── Status poll ───────────────────────────────────────────────────────
 
 @app.get("/api/status/{entity_id}")
@@ -166,95 +137,6 @@ async def api_chat(body: ChatSendRequest):
         return ChatSendResponse(replies=replies)
 
     raise HTTPException(400, "Cannot chat in this state.")
-
-
-# ── Periskope webhook ─────────────────────────────────────────────────
-
-@app.post("/webhook/periskope")
-async def webhook(request: Request, background_tasks: BackgroundTasks):
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-
-    # Only handle incoming messages — ignore delivery acks, reactions, etc.
-    event = payload.get("event")
-    if event != "message.created":
-        return JSONResponse({"ok": True})
-
-    msg = PeriskopeWebhook(**payload)
-    if not msg.data:
-        return JSONResponse({"ok": True})
-
-    # from_me=True means the BOT sent this — skip to avoid echo loops
-    if msg.data.from_me:
-        return JSONResponse({"ok": True})
-
-    phone = msg.data.sender()   # normalised, no @c.us
-    body = msg.data.body
-
-    if not phone or not body:
-        return JSONResponse({"ok": True})
-
-    user = await db.get_user_by_phone(phone)
-    if not user:
-        return JSONResponse({"ok": True})
-
-    status = user.get("status")
-
-    # ── First message → send the personalised welcome ─────────────────
-    if status == "pending_first_message":
-        await db.set_status(user["entity_id"], "active")
-        background_tasks.add_task(_send_first_message, user, phone)
-        return JSONResponse({"ok": True})
-
-    # ── Active → normal chat ──────────────────────────────────────────
-    if status == "active":
-        background_tasks.add_task(_chat, user, body)
-        return JSONResponse({"ok": True})
-
-    return JSONResponse({"ok": True})
-
-
-async def _send_first_message(user: dict, phone: str):
-    profile = user.get("profile") or {}
-    first_name = profile.get("first_name") or user.get("name", "").split()[0] or "hey"
-    persona = profile.get("persona_description") or ""
-    facts = profile.get("facts_sheet")
-
-    if persona:
-        # Full wow moment — we know who they are
-        replies = await craft_first_message(first_name, persona, facts)
-    else:
-        # Enrichment failed or is still running — graceful fallback
-        replies = [f"hey {first_name} 👋 you're in. just talk to me."]
-
-    for i, line in enumerate(replies):
-        await periskope.send(phone, line)
-        if i != len(replies) - 1:
-            await asyncio.sleep(0.35)
-
-    # Save to history so future turns have context of the first message
-    for line in replies:
-        await db.append_message_for_user(user, "assistant", line)
-
-
-async def _chat(user: dict, message: str):
-    profile = user.get("profile") or {}
-    persona = profile.get("persona_description")
-    facts = profile.get("facts_sheet")
-    phone = user.get("phone")
-    if not phone:
-        return
-
-    try:
-        replies = await reply(message, persona, user=user, facts_sheet=facts)
-        for i, line in enumerate(replies):
-            await periskope.send(phone, line)
-            if i != len(replies) - 1:
-                await asyncio.sleep(0.35)
-    except Exception:
-        await periskope.send(phone, "something broke on my end, try again?")
 
 
 async def _first_message_web(user: dict, user_text: str) -> list[str]:
