@@ -136,8 +136,14 @@ class UserProfile(BaseModel):
     linkedin: Optional[str] = None
     location: Optional[str] = None
 
-    # Single source of truth for tone/content in chat prompts.
+    # Tone + identity paragraph written by the persona-writer agent.
     persona_description: Optional[str] = None
+
+    # Deterministic, privacy-filtered bullet list of concrete facts
+    # (cuisines, restaurants, destinations, handles, subscriptions…).
+    # Built without an LLM so nothing is invented. Finance data is
+    # intentionally excluded.
+    facts_sheet: Optional[str] = None
 
     # Rich structured enrichment (all buckets + Perplexity + persona); stored in MongoDB as JSON.
     enrichment: Optional[EnrichmentPayload] = None

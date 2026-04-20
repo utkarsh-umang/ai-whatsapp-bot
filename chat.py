@@ -77,14 +77,16 @@ Hard rules (privacy + honesty):
 """
 
 
-def _build_system(persona_description: str | None) -> str:
+def _build_system(persona_description: str | None, facts_sheet: str | None = None) -> str:
     base = _BASE_SYSTEM
     if persona_description:
         base += (
-            "\nWho you're talking to (grounded signals from their Gmail + public web):\n"
+            "\nWho you're talking to (identity + tone — grounded from their Gmail + public web):\n"
             + persona_description.strip()
             + "\n"
         )
+    if facts_sheet:
+        base += "\n" + facts_sheet.strip() + "\n"
     base += (
         "\nCritical: You already know this person from when they signed up. "
         "You're not meeting them for the first time on every message. "
@@ -98,17 +100,18 @@ def _build_system(persona_description: str | None) -> str:
 _FIRST_MESSAGE_PROMPT = """\
 Write the very first message faff sends to {first_name} after they sign up. This is the WOW moment.
 
-What you know about {first_name}:
+Identity + tone:
 {persona_description}
 
-Rules:
+{facts_block}Rules:
 - Open with their first name and a casual greeting (hey, not "Hello").
-- Pick ONE specific grounded detail from the persona above — the most surprising or telling one — and weave it in naturally. Don't stack multiple.
-- Specific beats generic: "saw you're building agentic stuff at WordsWorth" beats "saw you work in AI".
+- Pick the SINGLE most surprising or telling concrete item from the facts above and lead with it. Use the VERBATIM specifics (restaurant names, cities, destinations, subscriptions) — don't generalise them away.
+- Specific beats generic: "saw you're building agentic stuff at WordsWorth" beats "saw you work in AI"; "hope Goa was worth the 4 AM flight" beats "hope your last trip was fun".
+- Only ONE concrete callback. Do not stack multiple facts.
 - Keep it SHORT. 3-4 short lines max. WhatsApp, not email.
 - End with one casual line about what faff does — invite them to just talk.
-- Do NOT use bullet points. Do NOT say "I've connected your accounts." Do NOT mention finances or bank data.
-- If the persona has "Unknowns" — respect them, don't bluff.
+- Do NOT use bullet points. Do NOT say "I've connected your accounts." Do NOT mention banks, money, cards, or finance alerts. Do NOT quote the persona back at them.
+- If the facts sheet is empty or the persona has "Unknowns", stay warm and generic — never bluff.
 
 Write just the messages. No quotes, no explanation.
 """
@@ -117,10 +120,15 @@ Write just the messages. No quotes, no explanation.
 async def craft_first_message(
     first_name: str,
     persona_description: str,
+    facts_sheet: str | None = None,
 ) -> list[str]:
+    facts_block = ""
+    if facts_sheet and facts_sheet.strip():
+        facts_block = facts_sheet.strip() + "\n\n"
     prompt = _FIRST_MESSAGE_PROMPT.format(
         first_name=first_name,
         persona_description=persona_description or "unknown — keep it warm and generic.",
+        facts_block=facts_block,
     )
     resp = await _client.chat.completions.create(
         model=MODEL_FIRST,
@@ -150,12 +158,13 @@ async def reply(
     persona_description: str | None,
     *,
     user: dict[str, Any],
+    facts_sheet: str | None = None,
 ) -> list[str]:
     """Load conversation history, call GPT, save both turns, return response."""
     history = await db.get_history_for_user(user)
 
     messages = [
-        {"role": "system", "content": _build_system(persona_description)},
+        {"role": "system", "content": _build_system(persona_description, facts_sheet)},
         {"role": "system", "content": _MULTI_MESSAGE_SYSTEM},
     ]
     for turn in history:

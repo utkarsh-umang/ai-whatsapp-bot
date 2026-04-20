@@ -630,7 +630,8 @@ async def extract_finance_insights(name: str, email: str, emails: list[dict]) ->
 _PERSONA_WRITER_SYSTEM = """\
 You are a persona writer. Given structured signals about a user (all grounded in their Gmail + \
 public web), write a compact, durable description of who they are. This description will be \
-injected into every future chat as the model's memory of this person.
+injected into every future chat as the model's memory of this person, alongside a separate \
+deterministic facts sheet — so your job is to capture IDENTITY and TONE, not enumerate every fact.
 
 Output format — plain text, no JSON, no markdown fences, no headings. Use short labelled lines, \
 in this order, separated by single newlines:
@@ -640,15 +641,16 @@ Role: <current job title at company — only if grounded; otherwise: unknown>
 Bio: <one sentence, specific, grounded in the web/profile data; otherwise: unknown>
 Location: <city/country if known; otherwise: unknown>
 Online presence: <public handles and one-line impression, e.g. "IG @xyz; LinkedIn /in/abc">
-Lifestyle hooks: <1-2 concrete, grounded details from food/travel/shopping/finance signals — e.g. "late-night Swiggy orders, loves biryani; frequent traveller to Goa". If nothing grounded, write: none grounded>
+Vibe: <one short sentence that captures who they feel like based on all signals — e.g. "Bengaluru-based backend engineer who lives on late-night biryani and weekend Goa trips". Use VERBATIM specifics from the input (restaurant names, cuisines, destinations, subscriptions) when present. If signals are thin, say "unclear — calibrate from their messages".>
 Unknowns: <comma-separated list of fields we couldn't confirm (e.g. "role, company, city") so the chat model never bluffs>
-Tone: witty, peer-to-peer, concise; never invent facts; reference at most one grounded detail per message; never mention bank names or money amounts.
+Tone: <one line of voice guidance, e.g. "witty, peer-to-peer, concise; mirror their register">
 
 Hard rules:
 - Only restate facts present in the input JSON. If a signal is low-confidence or missing, say "unknown".
-- Never output amounts, card numbers, or bank names. Finance signals collapse to coarse categories like "frequent traveller" or "regular subscriber".
+- In the Vibe line, prefer verbatim specifics from the input (cuisine names, restaurant names, city names, destinations, subscriptions) over vague adjectives. Do NOT say "occasional traveller" if you have actual destinations — say the destinations.
+- Never output amounts, card numbers, or bank names. Treat finance signals as coarse lifestyle context only (e.g. "frequent traveller", "regular subscriber") and never cite merchants.
 - Never invent restaurants, cities, job titles, or projects.
-- Keep the whole output under ~200 words.
+- Keep the whole output under ~150 words. Tight and usable.
 """
 
 
@@ -687,6 +689,186 @@ async def write_persona_description(
     except Exception as e:
         logging.error(f"[enrichment] persona writer failed: {e}", exc_info=True)
         return None, None
+
+
+# ── Deterministic facts sheet ────────────────────────────────────────
+#
+# Built without an LLM, directly from structured enrichment objects, so no
+# hallucination risk. The chat model is instructed to pick at most ONE item
+# from this sheet per message. Finance data is intentionally excluded — it
+# only contributes at most a coarse "frequent traveller" / "regular subscriber"
+# hint via the persona writer, never a line here.
+
+_FACTS_SHEET_MAX_ITEMS_PER_FIELD = 4
+
+
+def _dedup_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in items:
+        if not raw:
+            continue
+        s = str(raw).strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def _cap(items: list[str], n: int = _FACTS_SHEET_MAX_ITEMS_PER_FIELD) -> list[str]:
+    return _dedup_preserve_order(items)[:n]
+
+
+def build_facts_sheet(
+    *,
+    name: str,
+    perplexity_fields: dict,
+    social: SocialEmailInsights,
+    lifestyle: LifestyleInsights,
+) -> str:
+    """Return a compact bullet list of concrete, grounded facts. Empty lines skipped.
+
+    Shape (only lines that have data are emitted):
+      - Professional: <role> at <company> — <bio>
+      - Location: <city/country>
+      - Online: IG @handle; LinkedIn /in/xyz; LinkedIn headline: "..."
+      - Food: loves <cuisines>; frequent at <restaurants>; orders at <times>; in <cities>
+      - Travel: been to <destinations>; uses <ride apps>; modes: <modes>
+      - Shopping: shops on <platforms>; buys <categories>; notable items: <items>
+      - Subscriptions: <subs>
+      - Interests: <public interests>
+
+    Finance is intentionally excluded. No amounts, banks, merchants, or cards.
+    """
+    lines: list[str] = []
+
+    # Professional
+    role = (perplexity_fields or {}).get("role")
+    company = (perplexity_fields or {}).get("company")
+    bio = (perplexity_fields or {}).get("bio")
+    prof_bits: list[str] = []
+    if role and company:
+        prof_bits.append(f"{role} at {company}")
+    elif role:
+        prof_bits.append(str(role))
+    elif company:
+        prof_bits.append(f"at {company}")
+    if bio:
+        prof_bits.append(str(bio).strip().rstrip("."))
+    if prof_bits:
+        lines.append("- Professional: " + " — ".join(prof_bits))
+
+    # Location
+    location = (perplexity_fields or {}).get("location")
+    if location:
+        lines.append(f"- Location: {location}")
+
+    # Online presence
+    online_bits: list[str] = []
+    ig_handle: str | None = None
+    linkedin_url: str | None = (perplexity_fields or {}).get("linkedin")
+    linkedin_headline: str | None = None
+    for acc in social.accounts:
+        platform = (acc.platform or "").lower()
+        if platform == "instagram" and acc.handle and not ig_handle:
+            ig_handle = acc.handle
+        if platform == "linkedin":
+            if acc.profile_url and not linkedin_url:
+                linkedin_url = acc.profile_url
+            if acc.headline and not linkedin_headline:
+                linkedin_headline = acc.headline
+    if ig_handle:
+        online_bits.append(f"IG @{ig_handle.lstrip('@')}")
+    if linkedin_url:
+        online_bits.append(f"LinkedIn {linkedin_url}")
+    if linkedin_headline:
+        online_bits.append(f'LinkedIn headline: "{linkedin_headline}"')
+    if online_bits:
+        lines.append("- Online: " + "; ".join(online_bits))
+
+    # Food
+    food = lifestyle.food
+    food_bits: list[str] = []
+    cuisines = _cap(food.cuisines)
+    restaurants = _cap(food.favourite_restaurants)
+    times = _cap(food.typical_order_times, 3)
+    cities = _cap(food.cities, 2)
+    if cuisines:
+        food_bits.append("loves " + ", ".join(cuisines))
+    if restaurants:
+        food_bits.append("frequent at " + ", ".join(restaurants))
+    if times:
+        food_bits.append("orders " + ", ".join(times))
+    if cities:
+        food_bits.append("in " + ", ".join(cities))
+    if food_bits:
+        lines.append("- Food: " + "; ".join(food_bits))
+
+    # Travel
+    travel = lifestyle.travel
+    travel_bits: list[str] = []
+    destinations = _cap(travel.travel_destinations, 5)
+    ride_apps = _cap(travel.ride_apps, 3)
+    modes = _cap(travel.travel_modes, 3)
+    travel_cities = _cap(travel.cities, 3)
+    if destinations:
+        travel_bits.append("been to " + ", ".join(destinations))
+    if travel_cities:
+        travel_bits.append("rides in " + ", ".join(travel_cities))
+    if ride_apps:
+        travel_bits.append("uses " + ", ".join(ride_apps))
+    if modes:
+        travel_bits.append("modes: " + ", ".join(modes))
+    if travel_bits:
+        lines.append("- Travel: " + "; ".join(travel_bits))
+
+    # Shopping (items) + Subscriptions (split so the chat model can pick cleanly)
+    shopping = lifestyle.shopping
+    shop_bits: list[str] = []
+    platforms = _cap(shopping.shopping_platforms, 3)
+    categories = _cap(shopping.purchase_categories, 4)
+    items = _cap(shopping.notable_items, 4)
+    if platforms:
+        shop_bits.append("shops on " + ", ".join(platforms))
+    if categories:
+        shop_bits.append("buys " + ", ".join(categories))
+    if items:
+        shop_bits.append("notable items: " + ", ".join(items))
+    if shop_bits:
+        lines.append("- Shopping: " + "; ".join(shop_bits))
+
+    subs = _cap(shopping.subscriptions, 5)
+    if subs:
+        lines.append("- Subscriptions: " + ", ".join(subs))
+
+    # Public interests (from Perplexity)
+    interests_raw = (perplexity_fields or {}).get("interests_public") or []
+    if isinstance(interests_raw, str):
+        # Perplexity snapshot serialises this as JSON string; tolerate both.
+        try:
+            parsed = json.loads(interests_raw)
+            if isinstance(parsed, list):
+                interests_raw = parsed
+            else:
+                interests_raw = []
+        except Exception:
+            interests_raw = []
+    interests = _cap([str(i) for i in interests_raw], 6)
+    if interests:
+        lines.append("- Interests: " + ", ".join(interests))
+
+    if not lines:
+        return ""
+
+    header = (
+        "Concrete facts about this person (reference at MOST one per message, "
+        "only when it naturally fits; never mention banks, money, or cards):"
+    )
+    return header + "\n" + "\n".join(lines)
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────
@@ -788,6 +970,19 @@ async def run_enrichment(entity_id: str) -> UserProfile:
         raw_response_excerpt=persona_excerpt,
     )
 
+    # Step 5: deterministic facts sheet — concrete items, privacy-filtered.
+    facts_sheet = build_facts_sheet(
+        name=name,
+        perplexity_fields=perplexity_fields,
+        social=social_insights,
+        lifestyle=lifestyle,
+    )
+    if facts_sheet:
+        line_count = facts_sheet.count("\n- ")
+        logging.info(f"[enrichment] facts_sheet built ({line_count} items, {len(facts_sheet)} chars)")
+    else:
+        logging.info("[enrichment] facts_sheet empty (no grounded items)")
+
     enrichment_payload = EnrichmentPayload(
         social_email_insights=social_insights,
         lifestyle_insights=lifestyle,
@@ -805,5 +1000,6 @@ async def run_enrichment(entity_id: str) -> UserProfile:
         linkedin=perplexity_fields.get("linkedin"),
         location=perplexity_fields.get("location"),
         persona_description=persona_description,
+        facts_sheet=facts_sheet or None,
         enrichment=enrichment_payload,
     )
