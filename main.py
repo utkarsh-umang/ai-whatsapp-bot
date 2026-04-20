@@ -160,9 +160,8 @@ async def api_chat(body: ChatSendRequest):
 
     if status == "active":
         profile = user.get("profile") or {}
-        tier = profile.get("personality_tier") or "unknown"
-        brief = profile.get("personality_brief")
-        replies = await reply(text, tier, brief, user=user)
+        persona = profile.get("persona_description")
+        replies = await reply(text, persona, user=user)
         return ChatSendResponse(replies=replies)
 
     raise HTTPException(400, "Cannot chat in this state.")
@@ -219,12 +218,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 async def _send_first_message(user: dict, phone: str):
     profile = user.get("profile") or {}
     first_name = profile.get("first_name") or user.get("name", "").split()[0] or "hey"
-    personality_brief = profile.get("personality_brief") or ""
-    tier = profile.get("personality_tier") or "unknown"
+    persona = profile.get("persona_description") or ""
 
-    if personality_brief:
+    if persona:
         # Full wow moment — we know who they are
-        replies = await craft_first_message(first_name, personality_brief, tier)
+        replies = await craft_first_message(first_name, persona)
     else:
         # Enrichment failed or is still running — graceful fallback
         replies = [f"hey {first_name} 👋 you're in. just talk to me."]
@@ -241,14 +239,13 @@ async def _send_first_message(user: dict, phone: str):
 
 async def _chat(user: dict, message: str):
     profile = user.get("profile") or {}
-    tier = profile.get("personality_tier") or "unknown"
-    brief = profile.get("personality_brief")
+    persona = profile.get("persona_description")
     phone = user.get("phone")
     if not phone:
         return
 
     try:
-        replies = await reply(message, tier, brief, user=user)
+        replies = await reply(message, persona, user=user)
         for i, line in enumerate(replies):
             await periskope.send(phone, line)
             if i != len(replies) - 1:
@@ -260,11 +257,10 @@ async def _chat(user: dict, message: str):
 async def _first_message_web(user: dict, user_text: str) -> list[str]:
     profile = user.get("profile") or {}
     first_name = profile.get("first_name") or user.get("name", "").split()[0] or "hey"
-    personality_brief = profile.get("personality_brief") or ""
-    tier = profile.get("personality_tier") or "unknown"
+    persona = profile.get("persona_description") or ""
 
-    if personality_brief:
-        replies = await craft_first_message(first_name, personality_brief, tier)
+    if persona:
+        replies = await craft_first_message(first_name, persona)
     else:
         replies = [f"hey {first_name} 👋 you're in. just talk to me."]
 

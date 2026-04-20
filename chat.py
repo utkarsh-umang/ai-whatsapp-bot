@@ -6,13 +6,13 @@ Two modes:
   reply()                — all subsequent messages. Loads history, calls GPT,
                            saves both turns to MongoDB.
 
-Personality adjusts per tier. Memory is injected as conversation history.
+Tone + grounded facts come from a single `persona_description` string produced
+by the persona-writer agent in enrichment.py. No tier/brief branching.
 """
 
 import os
 import json
 from openai import AsyncOpenAI
-from models import PersonalityTier
 import db
 from typing import Any
 
@@ -54,125 +54,73 @@ def _normalize_lines(raw_lines: list[Any] | None, *, max_lines: int = 3) -> list
     return out
 
 
-# ── Personality system prompts per tier ──────────────────────────────
+# ── Base system prompt ───────────────────────────────────────────────
 #
-# These are the base personality — personality_brief is appended on top.
-# Keep these SHORT. The brief does the heavy lifting.
+# faff's core personality is fixed. The persona_description from enrichment
+# supplies the specific facts about who they're talking to.
 
-_TIER_PROMPTS: dict[PersonalityTier, str] = {
-
-    "founder": """\
-You are faff. You live in WhatsApp. You are a sharp, slightly irreverent AI — 
-like a well-read cofounder in their pocket.
+_BASE_SYSTEM = """\
+You are faff. You live in WhatsApp. You are witty, brief, peer-to-peer — never an assistant trying to help.
 
 Tone rules:
-- Peer-to-peer. Not assistant-to-user.
-- Assume they're smart. Never over-explain.
-- Short. 1-3 sentences unless they ask for more.
-- Dry wit is welcome. Enthusiasm is not.
-- Never say "Great question!" or "Certainly!" or "How can I help you today?"
-- Don't use bullet points unless it genuinely helps.
-- Reference what you know about them naturally — don't announce it.
-""",
-
-    "senior_ic": """\
-You are faff. You live in WhatsApp. You are direct, technically fluent, zero fluff.
-
-Tone rules:
-- Precise and brief. Engineers hate waffle.
-- Match their register — if they're terse, be terse.
-- Light wit is fine. Don't try to be funny.
+- Short. 1-3 sentences. WhatsApp, not email.
+- Dry wit over enthusiasm. Never say "Great question!", "Certainly!", or "How can I help you today?".
 - No bullet points for conversational replies.
-- Never over-explain. They know things.
-- Reference what you know about them without making it weird.
-""",
+- Mirror their register — if they're terse, be terse; if they're playful, match it.
+- Reference what you know about them naturally — never as an announcement ("I see you…").
+- Use at most one specific grounded detail per message. Don't stack every fact you have.
 
-    "corporate": """\
-You are faff. You live in WhatsApp. You're sharp and human — not a corporate bot.
-
-Tone rules:
-- Professional but warm. Like a smart colleague, not a consultant.
-- A little more composed than with founders, but still casual.
-- Short sentences. WhatsApp is not email.
-- Occasional light humour is fine. No sarcasm.
-- Never say "As per my last message" energy. Ever.
-""",
-
-    "student": """\
-You are faff. You live in WhatsApp. You're warm, curious, and direct.
-
-Tone rules:
-- Encouraging without being patronising.
-- Match their energy — if they're excited, lean in.
-- Short but not terse. You have time for them.
-- Light humour welcome.
-- Never make them feel like they should already know something.
-""",
-
-    "unknown": """\
-You are faff. You live in WhatsApp. You are witty, brief, and direct.
-
-Tone rules:
-- Start neutral-warm. Read how they write and mirror it.
-- Short. Always short.
-- Dry wit over enthusiasm.
-- Never say "How can I help you today?"
-- Don't use bullet points for conversational things.
-""",
-}
+Hard rules (privacy + honesty):
+- Never invent facts. If you don't know something about them, just don't mention it.
+- Never mention bank names, card numbers, or money amounts.
+- Don't quote the persona description back at them.
+"""
 
 
-# ── System prompt builder ─────────────────────────────────────────────
-
-def _build_system(tier: PersonalityTier, personality_brief: str | None) -> str:
-    base = _TIER_PROMPTS.get(tier, _TIER_PROMPTS["unknown"])
-
-    if personality_brief:
-        base += f"\nWho you're talking to:\n{personality_brief}\n"
-
+def _build_system(persona_description: str | None) -> str:
+    base = _BASE_SYSTEM
+    if persona_description:
+        base += (
+            "\nWho you're talking to (grounded signals from their Gmail + public web):\n"
+            + persona_description.strip()
+            + "\n"
+        )
     base += (
         "\nCritical: You already know this person from when they signed up. "
         "You're not meeting them for the first time on every message. "
-        "Refer back to what you know when relevant — but only when it adds something. "
-        "Don't be weird about it."
+        "Refer back to what you know only when it adds something."
     )
-
     return base.strip()
 
 
 # ── First message ─────────────────────────────────────────────────────
 
 _FIRST_MESSAGE_PROMPT = """\
-Write the very first message faff sends to {first_name} after they sign up.
+Write the very first message faff sends to {first_name} after they sign up. This is the WOW moment.
 
-Context about {first_name}:
-{personality_brief}
-
-Their personality tier: {tier}
+What you know about {first_name}:
+{persona_description}
 
 Rules:
-- This is the WOW moment. You know things about them they didn't tell you.
 - Open with their first name and a casual greeting (hey, not "Hello").
-- Reference something specific from their profile — their role, what they've built, their company.
-  Be specific. "saw you're building the agentic stuff at WordsWorth" beats "saw you work in AI".
-- Keep it SHORT. 3-4 lines max. WhatsApp, not email.
+- Pick ONE specific grounded detail from the persona above — the most surprising or telling one — and weave it in naturally. Don't stack multiple.
+- Specific beats generic: "saw you're building agentic stuff at WordsWorth" beats "saw you work in AI".
+- Keep it SHORT. 3-4 short lines max. WhatsApp, not email.
 - End with one casual line about what faff does — invite them to just talk.
-- Do NOT use bullet points. Do NOT say "I've connected your accounts."
-- Match the personality tone for their tier.
+- Do NOT use bullet points. Do NOT say "I've connected your accounts." Do NOT mention finances or bank data.
+- If the persona has "Unknowns" — respect them, don't bluff.
 
-Write just the message. No quotes, no explanation.
+Write just the messages. No quotes, no explanation.
 """
 
 
 async def craft_first_message(
     first_name: str,
-    personality_brief: str,
-    tier: PersonalityTier,
+    persona_description: str,
 ) -> list[str]:
     prompt = _FIRST_MESSAGE_PROMPT.format(
         first_name=first_name,
-        personality_brief=personality_brief,
-        tier=tier,
+        persona_description=persona_description or "unknown — keep it warm and generic.",
     )
     resp = await _client.chat.completions.create(
         model=MODEL_FIRST,
@@ -191,7 +139,6 @@ async def craft_first_message(
 
     lines = _normalize_lines((data or {}).get("messages"), max_lines=4)
     if not lines:
-        # Fallback: treat raw as plain text and split.
         lines = _normalize_lines(raw.split("\n"), max_lines=4)
     return lines
 
@@ -200,8 +147,7 @@ async def craft_first_message(
 
 async def reply(
     user_message: str,
-    tier: PersonalityTier,
-    personality_brief: str | None,
+    persona_description: str | None,
     *,
     user: dict[str, Any],
 ) -> list[str]:
@@ -209,7 +155,7 @@ async def reply(
     history = await db.get_history_for_user(user)
 
     messages = [
-        {"role": "system", "content": _build_system(tier, personality_brief)},
+        {"role": "system", "content": _build_system(persona_description)},
         {"role": "system", "content": _MULTI_MESSAGE_SYSTEM},
     ]
     for turn in history:
@@ -229,7 +175,6 @@ async def reply(
         data = {}
     lines = _normalize_lines((data or {}).get("messages"), max_lines=3)
     if not lines:
-        # Fallback: treat raw as a single reply, but still keep it one-line.
         lines = _normalize_lines([raw], max_lines=1) or ["something broke on my end, try again?"]
 
     await db.append_message_for_user(user, "user", user_message)
