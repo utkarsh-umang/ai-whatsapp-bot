@@ -36,11 +36,39 @@ Every reply is instructed to use **at most one** concrete callback per message s
 
 If enrichment fails or isn’t ready yet, the product **degrades gracefully** (warm generic greeting) instead of breaking.
 
+```mermaid
+flowchart LR
+    U([User]) --> L[Landing page]
+    L --> O[Google sign-in via Composio]
+    O --> C[/auth/composio/callback/]
+    C --> R[Redirect to chat UI]
+    C -. background .-> E[Enrichment pipeline]
+    E --> M[(MongoDB)]
+    R --> F[First message]
+    F --> CH[Ongoing chat]
+    M --> F
+    M --> CH
+```
+
 ---
 
 ## How enrichment works (the pipeline)
 
 Enrichment is a **pipeline**, not a single API call. Think of it in layers.
+
+```mermaid
+flowchart TD
+    ID[Layer 1: Identity from Gmail profile] --> B[Layer 2: Gmail buckets - targeted search]
+    B --> X[Layer 3: Structured extraction per bucket]
+    X --> P[Layer 4: Perplexity public profile lookup]
+    X --> FS[Layer 6: Facts sheet - deterministic bullets]
+    P --> PW[Layer 5: Persona writer]
+    X --> PW
+    ID --> PW
+    PW --> OUT[persona_description + facts_sheet]
+    FS --> OUT
+    OUT --> DB[(MongoDB profile)]
+```
 
 ### Layer 1 — Identity from Google / Gmail
 
@@ -58,6 +86,20 @@ Instead of ingesting the whole mailbox, the app runs **several focused Gmail sea
 - **Finance** — Transaction-style alerts from major Indian bank senders (used only in **coarse** ways downstream; see Privacy below).
 
 Each bucket’s emails are **trimmed** (long bodies truncated) before any model sees them, to keep cost and noise under control.
+
+```mermaid
+flowchart LR
+    G[Gmail API via Composio] --> S[Social bucket]
+    G --> F[Food bucket]
+    G --> T[Travel & rides bucket]
+    G --> SH[Shopping & subscriptions]
+    G --> FN[Finance bucket]
+    S --> EX[Structured extraction - strict JSON per bucket]
+    F --> EX
+    T --> EX
+    SH --> EX
+    FN --> EX
+```
 
 ### Layer 3 — Structured extraction (per bucket)
 
